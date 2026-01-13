@@ -206,6 +206,22 @@ class SignalEngineV3:
     # -------------------------
     # Risk Guard
     # -------------------------
+    def _has_open_position(self, symbol: str, direction: str) -> bool:
+        """Check if there's an open position for symbol in given direction."""
+        try:
+            import MetaTrader5 as mt5
+            positions = mt5.positions_get(symbol=symbol)
+            if positions is None or len(positions) == 0:
+                return False
+            
+            for pos in positions:
+                pos_dir = "BUY" if pos.type == 0 else "SELL"
+                if pos_dir == direction:
+                    return True
+            return False
+        except:
+            return False  # Can't check, assume no position
+    
     def _risk_guard(self, symbol: str, signal: str) -> Tuple[bool, str]:
         """Apply Risk Guard rules."""
         now = datetime.now()
@@ -224,10 +240,13 @@ class SignalEngineV3:
         if elapsed < self.cooldown_sec:
             return False, f"Cooldown ({self.cooldown_sec - elapsed:.0f}s)"
         
-        # Duplicate direction
+        # 🔧 FIX: Duplicate direction - NOW WITH MT5 POSITION CHECK!
         last_sig = self.last_signal.get(symbol)
         if last_sig == signal:
-            return False, f"Duplicate direction ({signal})"
+            # Only block if position is actually still open
+            if self._has_open_position(symbol, signal):
+                return False, f"Duplicate direction ({signal}) - position open"
+            # Position closed (TP/SL hit) - allow re-entry!
         
         return True, ""
     

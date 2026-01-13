@@ -295,15 +295,19 @@ class SignalEngineV3:
         if self.risk_guard and signal != "HOLD":
             now = datetime.now()
             
-            # Duplicate direction
-            if signal == self.last_direction:
-                signal = "HOLD"
-                info += " | BLOCKED: duplicate"
+            # 🔧 FIX: Check ACTUAL MT5 positions, not internal state
+            has_same_dir_position = self._has_open_position_mt5(signal)
+            actual_positions = self._count_open_positions_mt5()
             
-            # Max positions
-            elif self.positions >= self.max_pos:
+            # Duplicate direction - ONLY block if position actually exists
+            if has_same_dir_position and not self._allow_pyramid():
                 signal = "HOLD"
-                info += f" | BLOCKED: max_pos ({self.positions}/{self.max_pos})"
+                info += f" | BLOCKED: duplicate ({signal} position open)"
+            
+            # Max positions - use ACTUAL count from MT5
+            elif actual_positions >= self.max_pos:
+                signal = "HOLD"
+                info += f" | BLOCKED: max_pos ({actual_positions}/{self.max_pos})"
             
             # Cooldown
             elif (now - self.last_trade_time).total_seconds() < self.cooldown_sec:
@@ -311,6 +315,41 @@ class SignalEngineV3:
                 info += " | BLOCKED: cooldown"
         
         return signal, info
+    
+    def _has_open_position_mt5(self, direction: str) -> bool:
+        """Check if there's an open position in given direction using MT5."""
+        try:
+            import MetaTrader5 as mt5
+            positions = mt5.positions_get(symbol='XAUUSD')
+            if positions is None or len(positions) == 0:
+                return False
+            
+            for pos in positions:
+                pos_dir = "BUY" if pos.type == 0 else "SELL"
+                if pos_dir == direction:
+                    return True
+            return False
+        except:
+            return False
+    
+    def _count_open_positions_mt5(self) -> int:
+        """Count actual open positions from MT5."""
+        try:
+            import MetaTrader5 as mt5
+            positions = mt5.positions_get(symbol='XAUUSD')
+            return len(positions) if positions else 0
+        except:
+            return self.positions  # Fallback to internal count
+    
+    def _allow_pyramid(self) -> bool:
+        """Check if pyramiding (multiple same-direction positions) is allowed."""
+        # For Aggressive profile, allow pyramiding
+        try:
+            from src.config.trading_profiles import get_active_profile
+            profile = get_active_profile()
+            return profile.entry.pyramid_allowed
+        except:
+            return False  # Conservative default
     
     def calculate_sl_tp(self, df: pd.DataFrame, direction: str, 
                         atr_sl_mult: float = 1.5, atr_tp_mult: float = 3.0) -> tuple:
@@ -493,7 +532,15 @@ def live_loop(
     if not sandbox:
         mt5.connect()
     
-    engine = SignalEngineV3()
+    # Get profile for max_pos
+    try:
+        from src.config.trading_profiles import get_active_profile
+        _profile = get_active_profile()
+        _max_pos = _profile.risk.max_open_positions
+    except:
+        _max_pos = 3  # Fallback
+    
+    engine = SignalEngineV3(max_pos=_max_pos)
     
     # Load existing model
     model_path = Path("models/xgb_imitation.pkl")

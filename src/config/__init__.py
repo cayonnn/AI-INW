@@ -23,6 +23,11 @@ from .trading_profiles import (
     AGGRESSIVE_PROFILE,
 )
 
+from .profile_fingerprint import (
+    profile_checksum,
+    validate_checksum,
+)
+
 __all__ = [
     "TradingMode",
     "TradingProfile",
@@ -39,4 +44,8 @@ __all__ = [
     "CONSERVATIVE_PROFILE",
     "BALANCED_PROFILE",
     "AGGRESSIVE_PROFILE",
+    # Fingerprint
+    "profile_checksum",
+    "validate_checksum",
 ]
+

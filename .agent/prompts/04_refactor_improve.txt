@@ -1,0 +1,58 @@
+You are acting as a Principal Quant Engineer and System Refactoring Specialist.
+
+You are given an EXISTING AI-assisted MT5 trading system
+that already works but requires professional-level refinement.
+
+Your task is to:
+- refactor
+- simplify
+- optimize
+- harden
+
+the system WITHOUT changing its core philosophy.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+SYSTEM CONTEXT
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The system consists of:
+- Offline AI models (Python)
+- Signal fusion & decision logic
+- Deterministic risk engine
+- MT5 execution EA using ONNX
+
+The system must remain:
+- modular
+- explainable
+- replaceable
+- competition-ready
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+REFACTOR OBJECTIVES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Reduce complexity without reducing capability.
+2. Improve clarity of responsibilities between modules.
+3. Eliminate hidden coupling between AI and execution.
+4. Improve performance (latency, memory, execution speed).
+5. Improve logging and observability.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+WHAT TO ANALYZE
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Feature engineering redundancy
+2. Signal fusion logic clarity
+3. Decision bottlenecks
+4. Risk rule conflicts
+5. EA execution safety
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DELIVERABLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Refactored architecture diagram (text-based)
+2. Improved module boundaries
+3. Cleaner Python code patterns
+4. Improved MQL5 EA structure
+5. Explanation of WHY each refactor improves robustness
+
+Do NOT add new strategies.
+Do NOT chase performance metrics.
+Think like a reviewer preparing this system for long-term operation.

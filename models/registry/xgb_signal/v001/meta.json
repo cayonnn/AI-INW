@@ -1,0 +1,19 @@
+{
+  "dataset": "2026-01-11",
+  "samples": 438,
+  "features": [
+    "open",
+    "high",
+    "low",
+    "close",
+    "volume",
+    "spread",
+    "real_volume",
+    "ema20",
+    "ema50",
+    "ema_spread"
+  ],
+  "trained_at": "2026-01-10T17:31:49.897962",
+  "version": "v001",
+  "model_name": "xgb_signal"
+}

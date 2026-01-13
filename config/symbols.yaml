@@ -1,0 +1,194 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI TRADING SYSTEM - SYMBOL CONFIGURATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+# Each symbol can have custom settings that override global defaults
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# Default settings applied to all symbols unless overridden
+defaults:
+  enabled: true
+  timeframe: "H1"
+  risk_per_trade_pct: 1.0
+  sl_atr_multiplier: 2.0
+  min_risk_reward: 1.5
+  max_spread_points: 30
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FOREX MAJORS
+# ═══════════════════════════════════════════════════════════════════════════════
+symbols:
+  EURUSD:
+    enabled: true
+    description: "Euro / US Dollar"
+    category: "forex_major"
+    pip_value: 0.0001
+    contract_size: 100000
+    min_lot: 0.01
+    max_lot: 100.0
+    margin_rate: 0.01
+    
+    # Custom parameters
+    sl_atr_multiplier: 1.8
+    max_spread_points: 20
+    
+    # Correlations (for exposure management)
+    correlations:
+      GBPUSD: 0.85
+      USDCHF: -0.90
+      USDJPY: -0.30
+
+  GBPUSD:
+    enabled: true
+    description: "British Pound / US Dollar"
+    category: "forex_major"
+    pip_value: 0.0001
+    contract_size: 100000
+    min_lot: 0.01
+    max_lot: 100.0
+    margin_rate: 0.01
+    
+    sl_atr_multiplier: 2.2
+    max_spread_points: 25
+    
+    correlations:
+      EURUSD: 0.85
+      EURGBP: -0.70
+
+  USDJPY:
+    enabled: true
+    description: "US Dollar / Japanese Yen"
+    category: "forex_major"
+    pip_value: 0.01
+    contract_size: 100000
+    min_lot: 0.01
+    max_lot: 100.0
+    margin_rate: 0.01
+    
+    sl_atr_multiplier: 2.0
+    max_spread_points: 20
+    
+    correlations:
+      EURJPY: 0.85
+      GBPJPY: 0.80
+
+  USDCHF:
+    enabled: true
+    description: "US Dollar / Swiss Franc"
+    category: "forex_major"
+    pip_value: 0.0001
+    contract_size: 100000
+    min_lot: 0.01
+    max_lot: 100.0
+    margin_rate: 0.01
+    
+    correlations:
+      EURUSD: -0.90
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FOREX CROSSES
+# ═══════════════════════════════════════════════════════════════════════════════
+  EURJPY:
+    enabled: true
+    description: "Euro / Japanese Yen"
+    category: "forex_cross"
+    pip_value: 0.01
+    contract_size: 100000
+    min_lot: 0.01
+    max_lot: 100.0
+    margin_rate: 0.01
+    
+    sl_atr_multiplier: 2.2
+    max_spread_points: 30
+
+  GBPJPY:
+    enabled: true
+    description: "British Pound / Japanese Yen"
+    category: "forex_cross"
+    pip_value: 0.01
+    contract_size: 100000
+    min_lot: 0.01
+    max_lot: 100.0
+    margin_rate: 0.01
+    
+    sl_atr_multiplier: 2.5
+    max_spread_points: 40
+    risk_per_trade_pct: 0.75  # Higher volatility = lower risk
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# COMMODITIES
+# ═══════════════════════════════════════════════════════════════════════════════
+  XAUUSD:
+    enabled: true
+    description: "Gold / US Dollar"
+    category: "commodity"
+    pip_value: 0.01
+    contract_size: 100  # 100 oz
+    min_lot: 0.01
+    max_lot: 50.0
+    margin_rate: 0.02
+    
+    sl_atr_multiplier: 2.0
+    max_spread_points: 50
+    risk_per_trade_pct: 0.75  # Higher volatility
+
+  XAGUSD:
+    enabled: false  # Disabled by default - higher volatility
+    description: "Silver / US Dollar"
+    category: "commodity"
+    pip_value: 0.001
+    contract_size: 5000  # 5000 oz
+    min_lot: 0.01
+    max_lot: 50.0
+    margin_rate: 0.02
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# INDICES
+# ═══════════════════════════════════════════════════════════════════════════════
+  US500:
+    enabled: false  # Enable when strategy is validated
+    description: "S&P 500 Index"
+    category: "index"
+    pip_value: 0.1
+    contract_size: 1
+    min_lot: 0.1
+    max_lot: 100.0
+    margin_rate: 0.01
+
+  US30:
+    enabled: false
+    description: "Dow Jones Industrial Average"
+    category: "index"
+    pip_value: 1.0
+    contract_size: 1
+    min_lot: 0.1
+    max_lot: 100.0
+    margin_rate: 0.01
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SYMBOL GROUPS (for batch operations)
+# ═══════════════════════════════════════════════════════════════════════════════
+groups:
+  forex_majors:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - USDCHF
+  
+  forex_crosses:
+    - EURJPY
+    - GBPJPY
+  
+  commodities:
+    - XAUUSD
+    - XAGUSD
+  
+  indices:
+    - US500
+    - US30
+  
+  # Active trading symbols
+  active:
+    - EURUSD
+    - GBPUSD
+    - USDJPY
+    - XAUUSD

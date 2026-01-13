@@ -1,0 +1,280 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI TRADING SYSTEM - RISK MANAGEMENT PARAMETERS
+# ═══════════════════════════════════════════════════════════════════════════════
+# WARNING: These parameters control real money. Modify with extreme caution.
+# All risk logic is DETERMINISTIC - no machine learning allowed here.
+# ═══════════════════════════════════════════════════════════════════════════════
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# POSITION SIZING (Fixed Fractional)
+# ═══════════════════════════════════════════════════════════════════════════════
+position_sizing:
+  method: "fixed_fractional"  # fixed_fractional | fixed_lot | kelly
+  
+  # Fixed Fractional Parameters
+  risk_per_trade_pct: 1.0       # Base risk per trade
+  min_risk_pct: 0.5             # Minimum risk
+  max_risk_pct: 2.0             # Maximum risk (hard cap)
+  
+  # Risk scaling based on confidence (optional)
+  confidence_scaling:
+    enabled: true
+    low_confidence_mult: 0.5    # < 60% confidence
+    medium_confidence_mult: 1.0 # 60-80% confidence  
+    high_confidence_mult: 1.25  # > 80% confidence
+  
+  # Lot constraints
+  min_lot: 0.01
+  lot_step: 0.01
+  max_lot_per_position: 10.0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# STOP LOSS RULES
+# ═══════════════════════════════════════════════════════════════════════════════
+stop_loss:
+  method: "atr_based"  # atr_based | fixed_pips | structure
+  
+  # ATR-Based Stop Loss
+  atr_multiplier: 2.0
+  atr_period: 14
+  
+  # Absolute constraints (always enforced)
+  min_sl_pips: 20
+  max_sl_pips: 100
+  
+  # Structure-based adjustments
+  structure:
+    enabled: true
+    add_buffer_pips: 5  # Add buffer beyond S/R level
+    max_extension_pct: 20  # Max extension beyond ATR SL
+  
+  # Trailing Stop
+  trailing:
+    enabled: false  # Disabled by default - enable after validation
+    method: "atr"  # atr | pips | percent
+    activation_rr: 1.0  # Activate after 1R profit
+    trail_distance_atr: 1.5
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TAKE PROFIT RULES
+# ═══════════════════════════════════════════════════════════════════════════════
+take_profit:
+  method: "risk_reward"  # risk_reward | atr_based | structure
+  
+  # Risk:Reward Based
+  min_risk_reward: 1.5
+  default_risk_reward: 2.0
+  max_risk_reward: 5.0
+  
+  # Partial Take Profit
+  partials:
+    enabled: true
+    levels:
+      - rr: 1.0
+        close_pct: 30
+        move_sl_to: "breakeven"
+      - rr: 2.0
+        close_pct: 50
+        move_sl_to: "1r"
+    # Remaining 20% runs with trailing
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXPOSURE LIMITS
+# ═══════════════════════════════════════════════════════════════════════════════
+exposure:
+  # Per-Symbol Limits
+  max_exposure_per_symbol_pct: 5.0
+  max_positions_per_symbol: 1
+  
+  # Portfolio Limits
+  max_total_exposure_pct: 15.0
+  max_total_positions: 5
+  
+  # Category Limits
+  category_limits:
+    forex_major:
+      max_exposure_pct: 10.0
+      max_positions: 3
+    forex_cross:
+      max_exposure_pct: 6.0
+      max_positions: 2
+    commodity:
+      max_exposure_pct: 5.0
+      max_positions: 1
+    index:
+      max_exposure_pct: 5.0
+      max_positions: 1
+  
+  # Direction Limits
+  max_long_exposure_pct: 10.0
+  max_short_exposure_pct: 10.0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CORRELATION MANAGEMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+correlation:
+  enabled: true
+  max_correlation: 0.7
+  lookback_period: 100
+  
+  # Actions when correlation exceeded
+  action: "reduce"  # block | reduce | warn
+  reduce_factor: 0.5  # Reduce position size by 50% if correlated
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DRAWDOWN PROTECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+drawdown:
+  # Daily Limits
+  max_daily_drawdown_pct: 3.0
+  daily_reset_hour_utc: 0
+  
+  # Weekly Limits
+  max_weekly_drawdown_pct: 5.0
+  weekly_reset_day: 0  # Monday
+  
+  # Total/Monthly Limits
+  max_total_drawdown_pct: 10.0
+  
+  # Actions
+  actions:
+    daily_limit_hit:
+      - "close_all_positions"
+      - "pause_trading_hours: 24"
+      - "notify_alert"
+    
+    weekly_limit_hit:
+      - "close_all_positions"
+      - "pause_trading_days: 3"
+      - "notify_alert"
+      - "reduce_risk: 0.5"
+    
+    total_limit_hit:
+      - "close_all_positions"
+      - "pause_trading_indefinite"
+      - "notify_critical"
+      - "require_manual_reset"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# CONSECUTIVE LOSS PROTECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+loss_protection:
+  max_consecutive_losses: 5
+  
+  actions:
+    3_losses:
+      - "reduce_risk: 0.75"
+    5_losses:
+      - "pause_trading_hours: 4"
+      - "reduce_risk: 0.5"
+    7_losses:
+      - "pause_trading_hours: 24"
+      - "reduce_risk: 0.25"
+      - "notify_alert"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# TRADING SESSION FILTERS
+# ═══════════════════════════════════════════════════════════════════════════════
+session_filters:
+  enabled: true
+  
+  # Allowed sessions (UTC hours)
+  sessions:
+    london:
+      start: 7
+      end: 16
+      enabled: true
+    
+    new_york:
+      start: 12
+      end: 21
+      enabled: true
+    
+    tokyo:
+      start: 0
+      end: 9
+      enabled: false  # Lower liquidity
+    
+    sydney:
+      start: 22
+      end: 7
+      enabled: false
+  
+  # Rollover avoidance
+  avoid_rollover:
+    enabled: true
+    start_hour_utc: 21
+    end_hour_utc: 22
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# NEWS & EVENT FILTERS
+# ═══════════════════════════════════════════════════════════════════════════════
+news_filters:
+  enabled: true
+  
+  # High-impact news
+  high_impact:
+    avoid_before_minutes: 30
+    avoid_after_minutes: 30
+    close_positions: false
+  
+  # Medium-impact news
+  medium_impact:
+    avoid_before_minutes: 15
+    avoid_after_minutes: 15
+    close_positions: false
+  
+  # Specific events to always avoid
+  always_avoid:
+    - "NFP"
+    - "FOMC"
+    - "ECB_RATE"
+    - "BOE_RATE"
+    - "GDP"
+    - "CPI"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# REGIME-BASED RISK ADJUSTMENT
+# ═══════════════════════════════════════════════════════════════════════════════
+regime_adjustments:
+  trending:
+    risk_multiplier: 1.0
+    sl_multiplier: 1.0
+    allow_trading: true
+  
+  ranging:
+    risk_multiplier: 0.75
+    sl_multiplier: 0.8
+    allow_trading: true
+  
+  high_volatility:
+    risk_multiplier: 0.5
+    sl_multiplier: 1.5
+    allow_trading: false  # Too risky
+  
+  low_volatility:
+    risk_multiplier: 1.0
+    sl_multiplier: 0.8
+    allow_trading: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EMERGENCY CONTROLS
+# ═══════════════════════════════════════════════════════════════════════════════
+emergency:
+  # Master kill switch
+  kill_switch:
+    enabled: true
+    trigger_drawdown_pct: 15.0
+    actions:
+      - "close_all_positions_immediate"
+      - "disable_all_trading"
+      - "notify_critical"
+  
+  # Abnormal market detection
+  abnormal_market:
+    enabled: true
+    spread_multiplier_trigger: 3.0  # 3x normal spread
+    volatility_multiplier_trigger: 3.0  # 3x normal ATR
+    actions:
+      - "pause_new_trades"
+      - "notify_warning"

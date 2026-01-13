@@ -1,0 +1,237 @@
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI TRADING SYSTEM - GLOBAL CONFIGURATION
+# ═══════════════════════════════════════════════════════════════════════════════
+# Version: 1.0.0
+# Last Updated: 2026-01-09
+# ═══════════════════════════════════════════════════════════════════════════════
+
+system:
+  name: "AI-Trading-System"
+  version: "1.0.0"
+  environment: "development"  # development | staging | production
+  log_level: "INFO"  # DEBUG | INFO | WARNING | ERROR | CRITICAL
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# MT5 CONNECTION
+# ═══════════════════════════════════════════════════════════════════════════════
+mt5:
+  terminal_path: "C:/Program Files/MetaTrader 5/terminal64.exe"
+  login: null  # Set via environment variable MT5_LOGIN
+  password: null  # Set via environment variable MT5_PASSWORD
+  server: null  # Set via environment variable MT5_SERVER
+  timeout_ms: 60000
+  retry_attempts: 3
+  retry_delay_ms: 1000
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# DATA SETTINGS
+# ═══════════════════════════════════════════════════════════════════════════════
+data:
+  primary_timeframe: "H1"
+  secondary_timeframes: ["M15", "H4", "D1"]
+  lookback_bars: 1000
+  min_bars_required: 500
+  cache_enabled: true
+  cache_ttl_seconds: 300
+  
+  # Data quality thresholds
+  max_gap_seconds: 3600
+  max_missing_bars_pct: 5.0
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# FEATURE ENGINEERING
+# ═══════════════════════════════════════════════════════════════════════════════
+features:
+  # Price Action
+  swing_lookback: 20
+  support_resistance_sensitivity: 0.001
+  
+  # Trend & Momentum
+  ema_periods: [8, 21, 55, 200]
+  rsi_period: 14
+  macd:
+    fast_period: 12
+    slow_period: 26
+    signal_period: 9
+  
+  # Volatility
+  atr_period: 14
+  bollinger:
+    period: 20
+    std_dev: 2.0
+  volatility_percentile_lookback: 100
+  
+  # Regime Detection
+  regime_lookback: 50
+  trend_threshold: 0.6
+  volatility_threshold_high: 75
+  volatility_threshold_low: 25
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# AI MODELS
+# ═══════════════════════════════════════════════════════════════════════════════
+models:
+  # LSTM Direction Model
+  lstm:
+    enabled: true
+    sequence_length: 60
+    hidden_size: 128
+    num_layers: 2
+    dropout: 0.2
+    model_path: "artifacts/models/lstm_direction.onnx"
+    version: "1.0.0"
+  
+  # XGBoost Timing Model
+  xgboost:
+    enabled: true
+    n_estimators: 500
+    max_depth: 6
+    learning_rate: 0.01
+    model_path: "artifacts/models/xgb_timing.json"
+    version: "1.0.0"
+  
+  # LightGBM Confirmation Model
+  lightgbm:
+    enabled: true
+    n_estimators: 500
+    max_depth: 6
+    learning_rate: 0.01
+    model_path: "artifacts/models/lgb_confirm.txt"
+    version: "1.0.0"
+  
+  # PPO Strategy Selector (Optional)
+  ppo:
+    enabled: false
+    model_path: "artifacts/models/ppo_strategy.zip"
+    version: "1.0.0"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# SIGNAL FUSION
+# ═══════════════════════════════════════════════════════════════════════════════
+signals:
+  # Model weights for ensemble
+  weights:
+    lstm: 0.4
+    xgboost: 0.35
+    lightgbm: 0.25
+  
+  # Decision thresholds
+  min_probability: 0.55
+  min_confidence: 0.60
+  min_model_agreement: 2
+  
+  # Regime filters
+  allow_trending: true
+  allow_ranging: true
+  allow_volatile: false
+  allow_quiet: true
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# RISK MANAGEMENT (DETERMINISTIC - NO ML)
+# ═══════════════════════════════════════════════════════════════════════════════
+risk:
+  # Position Sizing
+  risk_per_trade_pct: 1.0
+  max_risk_per_trade_pct: 2.0
+  
+  # Stop Loss
+  sl_atr_multiplier: 2.0
+  min_sl_pips: 20
+  max_sl_pips: 100
+  
+  # Take Profit
+  min_risk_reward: 1.5
+  default_risk_reward: 2.0
+  
+  # Exposure Limits
+  max_exposure_per_symbol_pct: 5.0
+  max_total_exposure_pct: 15.0
+  max_positions_per_symbol: 1
+  max_total_positions: 5
+  
+  # Correlation
+  max_correlation: 0.7
+  
+  # Drawdown Protection
+  max_daily_drawdown_pct: 3.0
+  max_weekly_drawdown_pct: 5.0
+  max_total_drawdown_pct: 10.0
+  
+  # Trading Hours (UTC)
+  trading_sessions:
+    enabled: true
+    allowed_hours: [[2, 11], [13, 21]]  # London & NY sessions
+  
+  # News Filter
+  news_filter:
+    enabled: true
+    avoid_before_minutes: 30
+    avoid_after_minutes: 15
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# EXECUTION
+# ═══════════════════════════════════════════════════════════════════════════════
+execution:
+  slippage_points: 10
+  max_spread_points: 30
+  magic_number: 123456
+  order_comment: "AI_Trading_v1"
+  fill_policy: "FOK"  # FOK | IOC | RETURN
+  
+  # Safety
+  emergency_stop_enabled: true
+  max_consecutive_losses: 5
+  pause_after_loss_minutes: 60
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# BACKTESTING
+# ═══════════════════════════════════════════════════════════════════════════════
+backtesting:
+  initial_balance: 100000.0
+  leverage: 100
+  commission_per_lot: 7.0
+  swap_enabled: true
+  
+  # Walk-Forward
+  train_window_bars: 5000
+  test_window_bars: 1000
+  step_bars: 500
+  min_trades_per_window: 30
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# LOGGING & MONITORING
+# ═══════════════════════════════════════════════════════════════════════════════
+logging:
+  console:
+    enabled: true
+    level: "INFO"
+    format: "text"  # text | json
+  
+  file:
+    enabled: true
+    level: "DEBUG"
+    path: "logs/trading.log"
+    max_size_mb: 100
+    backup_count: 10
+    format: "json"
+  
+  # Trade logging
+  trade_log:
+    enabled: true
+    path: "logs/trades.csv"
+
+# ═══════════════════════════════════════════════════════════════════════════════
+# ALERTS & NOTIFICATIONS
+# ═══════════════════════════════════════════════════════════════════════════════
+notifications:
+  telegram:
+    enabled: false
+    bot_token: null  # Set via environment variable
+    chat_id: null  # Set via environment variable
+  
+  email:
+    enabled: false
+    smtp_server: null
+    smtp_port: 587
+    sender: null
+    recipient: null

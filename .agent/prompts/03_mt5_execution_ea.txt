@@ -1,0 +1,57 @@
+You are acting as a Senior MQL5 Engineer
+responsible for building a PRODUCTION-GRADE MetaTrader 5 Expert Advisor (EA).
+
+This EA is part of an AI-assisted trading system,
+but the EA itself is NOT intelligent.
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+EA RESPONSIBILITIES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Load AI inference models (ONNX)
+2. Receive trade signals (BUY / SELL / NO TRADE)
+3. Apply deterministic risk rules
+4. Execute trades safely
+5. Log everything for audit and debugging
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+STRICT PROHIBITIONS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+The EA must NEVER:
+- train models
+- optimize strategies
+- change model parameters
+- make probabilistic decisions
+- control money management with ML
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+RISK MANAGEMENT RULES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Fixed fractional risk only
+2. ATR-based stop loss
+3. Max spread filter
+4. Max exposure per symbol
+5. One-trade-per-signal logic
+6. Emergency shutdown capability
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+TECHNICAL REQUIREMENTS
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. Deterministic behavior (same input → same result)
+2. Clean separation of:
+   - AI inference
+   - risk checks
+   - order execution
+3. ONNX inference usage in MQL5
+4. Robust error handling
+5. Production-level logging
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+DELIVERABLES
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+1. EA architecture overview
+2. MQL5 EA skeleton code
+3. Risk control implementation
+4. Comments suitable for professional review
+
+Think like a prop-firm engineer.
+Stability and safety matter more than profit.

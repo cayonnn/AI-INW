@@ -509,20 +509,26 @@ def live_loop(
     tp_model = None
     
     if FUND_GRADE_ENABLED:
+        # 🔥 Single Source of Truth: Load Profile ONCE
+        from src.config.trading_profiles import get_active_profile
+        active_profile = get_active_profile()
+        logging.info(f"🔥 Trading Profile: {active_profile.name}")
+        
         # Risk Manager
         risk_manager = RiskManager(
-            risk_per_trade=0.005,      # 0.5% per trade
-            max_positions_per_symbol=3,
-            max_daily_loss_pct=0.03    # 3% daily loss limit
+            risk_per_trade=active_profile.risk.risk_per_trade / 100,  # Convert % to decimal
+            max_positions_per_symbol=active_profile.risk.max_open_positions,
+            max_daily_loss_pct=active_profile.risk.max_daily_loss / 100
         )
         logging.info("✅ RiskManager initialized")
         
-        # Trailing Manager
-        trail_manager = TrailingManager(
-            be_rr=1.0,      # Break-even at 1R
-            trail_rr=2.0    # Trail at 2R
-        )
+        # Trailing Manager - USE PROFILE! (No hardcoded values)
+        trail_manager = TrailingManager(profile=active_profile)
         logging.info("✅ TrailingManager initialized")
+        
+        # Validate config consistency
+        assert trail_manager.be_rr == active_profile.trailing.be_trigger_r, \
+            f"Config Drift! TrailingManager BE={trail_manager.be_rr} != Profile BE={active_profile.trailing.be_trigger_r}"
         
         # AI SL/TP Models
         sl_model_path = Path("models/xgb_sl.pkl")

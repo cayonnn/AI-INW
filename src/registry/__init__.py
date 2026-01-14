@@ -1,27 +1,21 @@
 # src/registry/__init__.py
 """
-Model Registry Package - Fund-Grade
+Registry Module - Profile Management
 =====================================
 
-Versioned model management with:
-- Model Registry
-- Promotion Gate  
-- Hot Reload
-- Auto Rollback
+Manages profile states and promotion governance.
 """
 
-from .model_registry import ModelRegistry
-from .promotion_gate import PromotionGate, allow_promotion
-from .daily_retrain import DailyRetrainPipeline, run_daily_retrain
-from .hot_reload import HotReloader, load_latest_model, get_model_version
+from src.registry.promotion_engine import (
+    PromotionEngine,
+    ProfileState,
+    ProfileMetrics,
+    get_promotion_engine
+)
 
 __all__ = [
-    "ModelRegistry",
-    "PromotionGate",
-    "allow_promotion",
-    "DailyRetrainPipeline",
-    "run_daily_retrain",
-    "HotReloader",
-    "load_latest_model",
-    "get_model_version",
+    "PromotionEngine",
+    "ProfileState",
+    "ProfileMetrics",
+    "get_promotion_engine",
 ]

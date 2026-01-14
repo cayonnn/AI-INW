@@ -1,0 +1,46 @@
+profile:
+  name: Alpha
+  version: 1
+  mode: aggressive
+
+risk:
+  base: 0.02
+  max_daily_dd: 0.06
+
+confidence_engine:
+  thresholds:
+    high: 0.82
+    mid: 0.66
+    low: 0.50
+  multipliers:
+    high: 1.4
+    mid: 1.2
+    base: 1.0
+    low: 0.6
+
+pyramid:
+  enabled: true
+  layers:
+    - r: 0.0
+      mult: 1.0
+    - r: 1.0
+      mult: 0.7
+    - r: 2.0
+      mult: 0.4
+
+mode_switch:
+  trend:
+    score_bias: 1.1
+  chop:
+    score_bias: 0.8
+
+win_streak:
+  base_risk: 2.0
+  max_risk: 3.0
+  ramp_speed: 0.2
+  decay_on_loss: true
+
+_meta:
+  created_by: initial_setup
+  created_at: 2026-01-14
+  description: Default Alpha profile for competition trading

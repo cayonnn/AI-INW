@@ -1,0 +1,135 @@
+# Competition Alpha Profile - Production Grade
+# ============================================
+# Regime-aware configuration for leaderboard optimization
+
+profile:
+  name: "Competition Alpha"
+  version: 1.0
+  created: 2026-01-14
+  mode: competition
+
+# =============================================================================
+# REGIME-SPECIFIC CONFIGURATIONS
+# =============================================================================
+
+regimes:
+  TREND:
+    description: "Strong trend - maximize alpha"
+    base_risk: 2.5
+    max_risk: 4.0
+    pyramid:
+      enabled: true
+      levels:
+        - r_trigger: 0.0
+          risk_mult: 1.0
+        - r_trigger: 1.0
+          risk_mult: 0.7
+        - r_trigger: 2.0
+          risk_mult: 0.4
+    trailing:
+      be_r: 1.5
+      trail_start_r: 2.5
+      atr_mult: 2.0
+    confidence:
+      high: 0.75
+      mid: 0.60
+
+  CHOP:
+    description: "Choppy market - survive first"
+    base_risk: 0.8
+    max_risk: 1.5
+    pyramid:
+      enabled: false
+    trailing:
+      be_r: 0.8
+      trail_start_r: 1.2
+      atr_mult: 1.2
+    confidence:
+      high: 0.85
+      mid: 0.70
+
+  HIGH_VOL:
+    description: "High volatility - stay in game"
+    base_risk: 1.2
+    max_risk: 2.5
+    pyramid:
+      enabled: true
+      levels:
+        - r_trigger: 0.0
+          risk_mult: 1.0
+        - r_trigger: 1.2
+          risk_mult: 0.5
+    trailing:
+      be_r: 1.2
+      trail_start_r: 2.0
+      atr_mult: 2.5
+    confidence:
+      high: 0.80
+      mid: 0.65
+
+# =============================================================================
+# SCORE-BASED CAPS
+# =============================================================================
+
+score_caps:
+  score_lt_0:
+    risk_mult: 0.5
+    pyramid_enabled: false
+    mode: defensive
+  score_lt_3:
+    risk_mult: 0.8
+    pyramid_enabled: true
+    mode: neutral
+  score_gt_6:
+    risk_mult: 1.2
+    pyramid_enabled: true
+    mode: alpha
+
+# =============================================================================
+# SAFETY LIMITS
+# =============================================================================
+
+safety:
+  max_dd_daily: 3.0
+  max_dd_total: 8.0
+  max_consecutive_losses: 5
+  kill_switch_dd: 5.0
+  position_limit: 3
+
+# =============================================================================
+# WIN STREAK BOOSTER
+# =============================================================================
+
+win_streak:
+  base_risk: 2.0
+  max_risk: 3.5
+  ramp_per_win: 0.2
+  decay_on_loss: true
+  reset_on_dd: true
+
+# =============================================================================
+# MODE SWITCHING
+# =============================================================================
+
+mode_switch:
+  alpha:
+    score_threshold: 70
+    dd_threshold: 5.0
+    hysteresis: 3
+  neutral:
+    score_min: 40
+    score_max: 70
+  defensive:
+    score_threshold: 40
+    dd_threshold: 8.0
+    hysteresis: 3
+
+# =============================================================================
+# METADATA
+# =============================================================================
+
+_meta:
+  optimized_by: bayesian
+  last_retrain: null
+  promotion_status: SHADOW_ONLY
+  audit_log: true

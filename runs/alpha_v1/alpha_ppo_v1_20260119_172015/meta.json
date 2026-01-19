@@ -1,0 +1,9 @@
+{
+  "run_name": "alpha_ppo_v1_20260119_172015",
+  "timesteps": 100000,
+  "seed": 42,
+  "reward": "competition",
+  "policy": "PPO-Mlp",
+  "guardian_in_training": false,
+  "date": "20260119_172015"
+}

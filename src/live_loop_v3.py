@@ -58,9 +58,10 @@ from src.analytics.risk_stack import EffectiveRiskStack, get_effective_risk_stac
 from src.analytics.market_regime import MarketRegimeDetector, get_regime_detector, Regime, REGIME_MODE_MAP
 from src.ai.score_optimizer import ScoreOptimizer, get_score_optimizer, optimize_full_stack
 
-# Safety Systems (Progressive Guard + Kill Switch)
+# Safety Systems (Progressive Guard + Kill Switch + Margin Gate)
 from src.safety.progressive_guard import ProgressiveGuard, get_progressive_guard, AlertLevel
 from src.safety.kill_switch import get_kill_switch, is_trading_disabled
+from src.safety.guardian_margin_gate import GuardianMarginGate, get_margin_gate, GuardianDecision
 
 
 # =========================
@@ -292,7 +293,8 @@ def run_live_loop(
     # 🛡️ Safety Systems
     progressive_guard = get_progressive_guard()
     kill_switch = get_kill_switch()
-    logger.info("Safety Systems: Progressive Guard + Kill Switch initialized")
+    margin_gate = get_margin_gate(symbol)
+    logger.info("Safety Systems: Progressive Guard + Kill Switch + Margin Gate initialized")
     
     # Command writer for MT5
     command_writer = None
@@ -320,6 +322,9 @@ def run_live_loop(
         "streak_max": 0,
         "streak_wins": 0,
         "streak_losses": 0,
+        # 🛡️ Margin Guard Stats
+        "margin_blocks": 0,
+        "margin_clamps": 0,
     }
     
     logger.info("\n" + "-" * 60)
@@ -329,6 +334,11 @@ def run_live_loop(
             start_time = time.time()
             stats["cycles"] += 1
             cycle = stats["cycles"]
+            
+            # 🛡️ MARGIN GATE LATCH CHECK (Daily Loss)
+            if not margin_gate.allow_trade():
+                time.sleep(interval_sec)
+                continue
             
             # 🛡️ PROGRESSIVE GUARD CHECK - HARD STOP
             guard_status = progressive_guard.get_status()
@@ -400,6 +410,9 @@ def run_live_loop(
                             current_dd = ((acc.balance - acc.equity) / acc.balance) * 100
                 except:
                     pass
+                
+                # 🛡️ UPDATE MARGIN GATE DD
+                margin_gate.update_dd(current_dd)
                 
                 # Get live score (simplified for now)
                 live_score = 60.0  # Default mid-range score
@@ -492,6 +505,22 @@ def run_live_loop(
                         "magic": 900005,
                         "comment": f"V3_{signal}_R{current_risk:.1f}"
                     }
+                    
+                    # 🛡️ MARGIN GATE CHECK - HARD GATE
+                    margin_result = margin_gate.evaluate(lot_size, signal)
+                    
+                    if margin_result.decision == GuardianDecision.BLOCK:
+                        stats["margin_blocks"] += 1
+                        logger.warning(f"   🚫 MARGIN BLOCK: {margin_result.reason}")
+                        logger.warning(f"      Free: {margin_result.margin_free:.0f} | Required: {margin_result.margin_required:.0f}")
+                        continue  # Skip this trade
+                    
+                    if margin_result.decision == GuardianDecision.CLAMP:
+                        stats["margin_clamps"] += 1
+                        old_lot = lot_size
+                        lot_size = margin_result.allowed_lot
+                        trade["volume"] = lot_size
+                        logger.warning(f"   ⚠️ MARGIN CLAMP: {old_lot:.2f} → {lot_size:.2f}")
                     
                     stats["trades_sent"] += 1
                     success = command_writer.send_trade(trade)

@@ -1,394 +1,559 @@
 # src/rl/multi_agent_env.py
 """
-Multi-Agent Trading Environment
-================================
+Multi-Agent Co-Learning Environment
+====================================
 
-Competition-grade environment for Alpha vs Guardian training.
+Bi-level RL system where Alpha and Guardian learn together.
 
 Architecture:
-    Alpha Agent  →  proposes trades/pyramid
-    Guardian Agent → suggests risk adjustments
-    ProgressiveGuard → HARD enforcement (cannot bypass)
-    
-Reward Structure:
-    Alpha: Maximize score/profit
-    Guardian: Minimize DD/prevent kill
+    Alpha PPO (Trader) ←→ Guardian PPO (Risk)
+           ↓                    ↓
+         Market Environment
+           ↓
+      Separate Rewards
+
+Key Innovation:
+    "We train risk management as an intelligent agent,
+     not a static constraint."
+
+Paper Statement:
+    "Our Guardian learns to protect capital without killing opportunity,
+     creating an adversarial yet cooperative dynamic that produces
+     robust trading policies."
 """
 
-from dataclasses import dataclass
-from typing import Dict, Any, Tuple, Optional, List
+import gymnasium as gym
 import numpy as np
+from gymnasium import spaces
+from dataclasses import dataclass
+from typing import Tuple, Dict, Any, Optional
+from enum import IntEnum
 
 import sys
 import os
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
 
 from src.utils.logger import get_logger
-from src.rl.rewards import alpha_reward, guardian_reward
 
 logger = get_logger("MULTI_AGENT_ENV")
 
 
+# =============================================================================
+# Action Definitions
+# =============================================================================
+
+class AlphaAction(IntEnum):
+    HOLD = 0
+    BUY = 1
+    SELL = 2
+
+
+class GuardianAction(IntEnum):
+    ALLOW = 0
+    SCALE_DOWN = 1  # Reduce position size by 50%
+    BLOCK = 2       # Block this trade
+    FREEZE = 3      # Freeze all trading
+
+
+# =============================================================================
+# Configuration
+# =============================================================================
+
 @dataclass
-class EnvState:
-    """Environment state."""
-    equity: float
-    dd_today: float
-    dd_total: float
-    positions: int
-    win_rate: float
-    volatility: float
-    memory_percent: float
-    guard_level: str
-    score: float
+class MultiAgentConfig:
+    """Configuration for multi-agent environment."""
+    # Environment
+    max_steps: int = 1000
+    max_positions: int = 5
+    
+    # Alpha rewards
+    alpha_profit_scale: float = 0.1
+    alpha_guardian_allow: float = 0.2
+    alpha_guardian_block: float = -0.3
+    alpha_trigger_freeze: float = -1.0
+    alpha_hold_in_risk: float = 0.1
+    
+    # Guardian rewards
+    guardian_dd_avoided: float = 0.5
+    guardian_profit_preserved: float = 0.3
+    guardian_over_block: float = -0.2
+    guardian_late_block: float = -0.4
+    guardian_unnecessary_freeze: float = -1.0
+    
+    # Stability
+    guardian_update_interval: int = 5  # Update every N episodes
+    kl_regularization: float = 0.01
 
 
-class TradingEnvMultiAgent:
+# =============================================================================
+# Multi-Agent Environment
+# =============================================================================
+
+class MultiAgentTradingEnv(gym.Env):
     """
-    Multi-Agent Trading Environment.
+    Multi-Agent Environment for Alpha ↔ Guardian Co-Learning.
     
-    Two agents:
-    - Alpha: Entry, pyramid, aggression
-    - Guardian: Risk scaling, freeze suggestions
+    Observation Spaces:
+        Alpha:  [price_features, account_state, guardian_risk_level, 
+                 guardian_block_rate, alpha_confidence_history]
+        Guardian: [alpha_action, alpha_confidence, account_state,
+                   volatility_state, drawdown_slope]
     
-    ProgressiveGuard is always enforced first.
+    Action Spaces:
+        Alpha: Discrete(3) - HOLD, BUY, SELL
+        Guardian: Discrete(4) - ALLOW, SCALE_DOWN, BLOCK, FREEZE
+    
+    Rewards:
+        Alpha: Rewarded for profit, penalized for Guardian blocks
+        Guardian: Rewarded for DD avoided, penalized for over-blocking
     """
     
-    def __init__(
-        self,
-        initial_equity: float = 10000,
-        max_dd_limit: float = 10.0,
-        base_risk: float = 2.0
-    ):
-        """Initialize environment."""
-        self.initial_equity = initial_equity
-        self.max_dd_limit = max_dd_limit
-        self.base_risk = base_risk
-        
-        # State
-        self.equity = initial_equity
-        self.dd_today = 0.0
-        self.dd_total = 0.0
-        self.positions = 0
-        self.win_rate = 0.5
-        self.volatility = 1.0
-        self.memory_percent = 50.0
-        self.score = 0.0
-        
-        # Guard state
-        self.guard_level = "OK"
-        self.kill_latched = False
-        self.entries_frozen = False
-        self.pyramid_active = True
-        
-        # History
-        self.equity_history: List[float] = [initial_equity]
-        self.step_count = 0
-        
-        logger.info("MultiAgent Environment initialized")
+    metadata = {"render_modes": ["human"]}
     
-    def reset(self) -> Dict[str, np.ndarray]:
-        """Reset environment."""
-        self.equity = self.initial_equity
-        self.dd_today = 0.0
-        self.dd_total = 0.0
-        self.positions = 0
-        self.win_rate = 0.5
-        self.volatility = 1.0
-        self.memory_percent = 50.0
-        self.score = 0.0
+    def __init__(self, config: Optional[MultiAgentConfig] = None):
+        super().__init__()
         
-        self.guard_level = "OK"
-        self.kill_latched = False
-        self.entries_frozen = False
-        self.pyramid_active = True
+        self.config = config or MultiAgentConfig()
         
-        self.equity_history = [self.initial_equity]
+        # --- Alpha Space ---
+        self.alpha_obs_dim = 10
+        self.alpha_observation_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(self.alpha_obs_dim,), dtype=np.float32
+        )
+        self.alpha_action_space = spaces.Discrete(3)
+        
+        # --- Guardian Space ---
+        self.guardian_obs_dim = 8
+        self.guardian_observation_space = spaces.Box(
+            low=-1.0, high=1.0, shape=(self.guardian_obs_dim,), dtype=np.float32
+        )
+        self.guardian_action_space = spaces.Discrete(4)
+        
+        # Internal state
+        self._reset_state()
+    
+    def _reset_state(self):
+        """Reset all internal state."""
         self.step_count = 0
+        self.equity = 1000.0
+        self.start_equity = 1000.0
+        self.positions = 0
+        self.floating_pnl = 0.0
+        self.max_equity = 1000.0
+        self.current_dd = 0.0
+        self.dd_slope = 0.0
         
-        return {
-            "alpha": self._get_alpha_obs(),
-            "guardian": self._get_guardian_obs(),
-        }
+        # Tracking
+        self.alpha_actions_history = []
+        self.guardian_actions_history = []
+        self.blocks_count = 0
+        self.freezes_count = 0
+        self.profit_total = 0.0
+        self.dd_avoided_count = 0
+        
+        # Guardian state
+        self.is_frozen = False
+        self.freeze_until = 0
+        
+        # Market state (simulated)
+        self._ema_diff = 0.0
+        self._rsi = 0.0
+        self._atr = 0.0
+        self._volatility = 0.0
+    
+    # =========================================================================
+    # Gym Interface
+    # =========================================================================
+    
+    def reset(self, seed=None, options=None) -> Tuple[Dict[str, np.ndarray], Dict]:
+        super().reset(seed=seed)
+        self._reset_state()
+        
+        return self._get_observations(), {}
     
     def step(
         self,
-        actions: Dict[str, Dict]
-    ) -> Tuple[Dict[str, np.ndarray], Dict[str, float], bool, Dict]:
+        actions: Dict[str, int]
+    ) -> Tuple[Dict[str, np.ndarray], Dict[str, float], bool, bool, Dict]:
         """
-        Execute one step.
+        Execute one step with both agents.
         
         Args:
-            actions: {
-                "alpha": {"entry": 0/1, "pyramid": 0/1, "aggression": float},
-                "guardian": {"risk_mult": float, "freeze": bool}
-            }
-        
+            actions: {"alpha": action, "guardian": action}
+            
         Returns:
-            obs, rewards, done, info
+            observations, rewards, terminated, truncated, info
         """
         self.step_count += 1
         
-        # === 1. Progressive Guard ALWAYS FIRST ===
-        self._update_guard()
+        alpha_action = AlphaAction(actions.get("alpha", 0))
+        guardian_action = GuardianAction(actions.get("guardian", 0))
         
-        if self.kill_latched:
-            # Episode ends on kill
-            return self._terminal_state()
+        # Record actions
+        self.alpha_actions_history.append(alpha_action)
+        self.guardian_actions_history.append(guardian_action)
         
-        # === 2. Apply Guardian suggestions ===
-        guardian_action = actions.get("guardian", {})
-        risk_mult = guardian_action.get("risk_mult", 1.0)
+        # Apply Guardian decision
+        final_action, lot_multiplier = self._apply_guardian(
+            alpha_action, guardian_action
+        )
         
-        if guardian_action.get("freeze", False):
-            self.entries_frozen = True
+        # Execute trade (simulated)
+        profit, dd_change = self._simulate_trade(final_action, lot_multiplier)
         
-        if risk_mult < 0.5:
-            self.pyramid_active = False
+        # Update state
+        self._update_state(profit, dd_change)
         
-        # === 3. Alpha executes under constraints ===
-        alpha_action = actions.get("alpha", {})
+        # Calculate rewards
+        alpha_reward = self._calculate_alpha_reward(
+            alpha_action, guardian_action, profit
+        )
+        guardian_reward = self._calculate_guardian_reward(
+            alpha_action, guardian_action, dd_change, profit
+        )
         
-        if not self.entries_frozen and alpha_action.get("entry", 0):
-            self._execute_entry(risk_mult, alpha_action.get("aggression", 1.0))
+        # Check termination
+        terminated = self.current_dd >= 0.25 or self.equity <= 0
+        truncated = self.step_count >= self.config.max_steps
         
-        if self.pyramid_active and alpha_action.get("pyramid", 0):
-            self._execute_pyramid(risk_mult)
+        rewards = {"alpha": alpha_reward, "guardian": guardian_reward}
+        info = self._get_info()
         
-        # === 4. Simulate market movement ===
-        self._simulate_market()
-        
-        # === 5. Calculate rewards ===
-        alpha_r = self._calculate_alpha_reward()
-        guardian_r = self._calculate_guardian_reward()
-        
-        # === 6. Check done ===
-        done = self.kill_latched or self.dd_total > self.max_dd_limit
-        
-        obs = {
+        return self._get_observations(), rewards, terminated, truncated, info
+    
+    # =========================================================================
+    # Observations
+    # =========================================================================
+    
+    def _get_observations(self) -> Dict[str, np.ndarray]:
+        """Get observations for both agents."""
+        return {
             "alpha": self._get_alpha_obs(),
-            "guardian": self._get_guardian_obs(),
+            "guardian": self._get_guardian_obs()
         }
-        
-        rewards = {
-            "alpha": alpha_r,
-            "guardian": guardian_r,
-        }
-        
-        info = {
-            "equity": self.equity,
-            "dd_today": self.dd_today,
-            "guard_level": self.guard_level,
-            "score": self.score,
-        }
-        
-        return obs, rewards, done, info
-    
-    def _update_guard(self) -> None:
-        """Update Progressive Guard state."""
-        # DD-based levels
-        if self.dd_today > 5.0:
-            self.guard_level = "LEVEL_3"
-            self.kill_latched = True
-        elif self.dd_today > 3.0:
-            self.guard_level = "LEVEL_2"
-            self.entries_frozen = True
-        elif self.dd_today > 2.0:
-            self.guard_level = "LEVEL_1"
-            self.pyramid_active = False
-        else:
-            self.guard_level = "OK"
-    
-    def _execute_entry(self, risk_mult: float, aggression: float) -> None:
-        """Execute entry trade."""
-        effective_risk = self.base_risk * risk_mult * aggression
-        # Simplified PnL simulation
-        win = np.random.random() < self.win_rate
-        if win:
-            pnl = effective_risk * 1.5  # RR 1:1.5
-            self.score += 1
-        else:
-            pnl = -effective_risk
-            self.score -= 0.5
-        
-        self.equity *= (1 + pnl / 100)
-        self.positions += 1
-        self._update_dd()
-    
-    def _execute_pyramid(self, risk_mult: float) -> None:
-        """Execute pyramid add."""
-        effective_risk = self.base_risk * risk_mult * 0.5
-        win = np.random.random() < self.win_rate
-        if win:
-            pnl = effective_risk
-            self.score += 0.5
-        else:
-            pnl = -effective_risk
-        
-        self.equity *= (1 + pnl / 100)
-        self._update_dd()
-    
-    def _simulate_market(self) -> None:
-        """Simulate market noise."""
-        noise = np.random.normal(0, 0.001)
-        self.equity *= (1 + noise)
-        self.volatility = max(0.5, min(3.0, self.volatility + np.random.normal(0, 0.1)))
-        self._update_dd()
-    
-    def _update_dd(self) -> None:
-        """Update drawdown."""
-        peak = max(self.equity_history)
-        self.dd_total = (peak - self.equity) / peak * 100
-        
-        # Simple daily DD (reset every 100 steps)
-        if self.step_count % 100 == 0:
-            self.dd_today = 0
-        else:
-            day_start = self.equity_history[-min(100, len(self.equity_history))]
-            self.dd_today = max(0, (day_start - self.equity) / day_start * 100)
-        
-        self.equity_history.append(self.equity)
-    
-    def _calculate_alpha_reward(self) -> float:
-        """Calculate Alpha reward."""
-        if len(self.equity_history) < 2:
-            return 0
-        
-        pnl = (self.equity_history[-1] - self.equity_history[-2]) / self.equity_history[-2]
-        win = pnl > 0
-        
-        return alpha_reward({
-            "pnl": pnl * 100,
-            "score_delta": 0.1 if win else -0.05,
-            "win": win,
-            "dd_delta": max(0, self.dd_today - 1),
-        })
-    
-    def _calculate_guardian_reward(self) -> float:
-        """Calculate Guardian reward."""
-        return guardian_reward({
-            "daily_dd": self.dd_today,
-            "equity_slope": (self.equity_history[-1] - self.equity_history[-2]) / self.equity_history[-2] if len(self.equity_history) >= 2 else 0,
-            "kill_triggered": self.kill_latched,
-            "entries_frozen": self.entries_frozen,
-            "pyramid_active": self.pyramid_active,
-            "guard_level": self.guard_level,
-        })
     
     def _get_alpha_obs(self) -> np.ndarray:
-        """Get Alpha observation."""
+        """
+        Alpha observation:
+            - price_features (3): EMA diff, RSI, ATR
+            - account_state (3): equity %, positions, floating PnL
+            - guardian_context (2): risk level, block rate
+            - confidence_history (2): recent confidence stats
+        """
+        # Guardian risk level (0-1 based on recent blocks)
+        recent_blocks = sum(
+            1 for a in self.guardian_actions_history[-20:] 
+            if a >= GuardianAction.BLOCK
+        )
+        guardian_risk = min(recent_blocks / 20.0, 1.0)
+        
+        # Block rate
+        total_guardian_actions = len(self.guardian_actions_history)
+        block_rate = self.blocks_count / max(total_guardian_actions, 1)
+        
         return np.array([
-            self.equity / self.initial_equity,
-            self.positions / 5,
-            self.volatility / 3,
-            self.win_rate,
-            self.score / 100,
-            float(not self.entries_frozen),
-            float(self.pyramid_active),
+            # Price features
+            self._ema_diff,
+            self._rsi,
+            self._atr,
+            # Account state
+            (self.equity / self.start_equity) - 1,  # Equity change %
+            self.positions / self.config.max_positions,
+            self.floating_pnl / 100.0,
+            # Guardian context
+            guardian_risk,
+            block_rate,
+            # Confidence proxy (action consistency)
+            self._alpha_action_consistency(),
+            self.current_dd * 4  # Scaled DD
         ], dtype=np.float32)
     
     def _get_guardian_obs(self) -> np.ndarray:
-        """Get Guardian observation."""
-        guard_map = {"OK": 0, "LEVEL_1": 1, "LEVEL_2": 2, "LEVEL_3": 3}
+        """
+        Guardian observation:
+            - alpha_intent (2): proposed action, confidence
+            - account_state (3): equity %, DD, margin
+            - risk_context (3): volatility, DD slope, freeze status
+        """
+        # Latest alpha action (one-hot encoded as single value)
+        last_alpha = self.alpha_actions_history[-1] if self.alpha_actions_history else 0
+        alpha_intent = last_alpha / 2.0  # Normalize 0-2 to 0-1
+        
         return np.array([
-            self.dd_today / 10,
-            self.dd_total / 20,
-            self.memory_percent / 100,
-            self.win_rate,
-            self.volatility / 3,
-            guard_map.get(self.guard_level, 0) / 3,
-            self.positions / 5,
-            float(self.entries_frozen),
+            # Alpha intent
+            alpha_intent,
+            self._alpha_action_consistency(),
+            # Account state
+            (self.equity / self.start_equity) - 1,
+            self.current_dd * 4,
+            self.positions / self.config.max_positions,
+            # Risk context
+            self._volatility,
+            self.dd_slope,
+            float(self.is_frozen)
         ], dtype=np.float32)
     
-    def _terminal_state(self) -> Tuple[Dict, Dict, bool, Dict]:
-        """Return terminal state on kill."""
-        obs = {
-            "alpha": self._get_alpha_obs(),
-            "guardian": self._get_guardian_obs(),
+    def _alpha_action_consistency(self) -> float:
+        """Calculate how consistent Alpha's recent actions are."""
+        if len(self.alpha_actions_history) < 5:
+            return 0.5
+        recent = self.alpha_actions_history[-10:]
+        mode_action = max(set(recent), key=recent.count)
+        consistency = sum(1 for a in recent if a == mode_action) / len(recent)
+        return consistency
+    
+    # =========================================================================
+    # Guardian Logic
+    # =========================================================================
+    
+    def _apply_guardian(
+        self,
+        alpha_action: AlphaAction,
+        guardian_action: GuardianAction
+    ) -> Tuple[AlphaAction, float]:
+        """
+        Apply Guardian decision to Alpha's action.
+        
+        Returns:
+            (final_action, lot_multiplier)
+        """
+        # Check freeze status
+        if self.is_frozen:
+            if self.step_count >= self.freeze_until:
+                self.is_frozen = False
+            else:
+                return AlphaAction.HOLD, 0.0
+        
+        # Apply Guardian action
+        if guardian_action == GuardianAction.ALLOW:
+            return alpha_action, 1.0
+        
+        elif guardian_action == GuardianAction.SCALE_DOWN:
+            return alpha_action, 0.5  # 50% lot size
+        
+        elif guardian_action == GuardianAction.BLOCK:
+            self.blocks_count += 1
+            return AlphaAction.HOLD, 0.0
+        
+        else:  # FREEZE
+            self.freezes_count += 1
+            self.is_frozen = True
+            self.freeze_until = self.step_count + 10
+            return AlphaAction.HOLD, 0.0
+    
+    # =========================================================================
+    # Trade Simulation
+    # =========================================================================
+    
+    def _simulate_trade(
+        self,
+        action: AlphaAction,
+        lot_multiplier: float
+    ) -> Tuple[float, float]:
+        """
+        Simulate trade outcome.
+        
+        Returns:
+            (profit, dd_change)
+        """
+        profit = 0.0
+        dd_change = 0.0
+        
+        if action == AlphaAction.HOLD:
+            # Small cost for holding
+            profit = -0.01
+        else:
+            # Simplified P&L simulation
+            direction = 1 if action == AlphaAction.BUY else -1
+            market_move = np.random.normal(0, 0.5)  # Random market
+            
+            # Add trend component based on EMA
+            if (self._ema_diff > 0 and direction == 1) or \
+               (self._ema_diff < 0 and direction == -1):
+                market_move += 0.2  # Trend bonus
+            
+            profit = market_move * lot_multiplier * 10.0  # Scaled profit
+            
+            if profit < 0:
+                dd_change = abs(profit) / self.equity
+        
+        return profit, dd_change
+    
+    def _update_state(self, profit: float, dd_change: float):
+        """Update internal state after trade."""
+        self.equity += profit
+        self.profit_total += profit
+        
+        old_dd = self.current_dd
+        
+        if self.equity > self.max_equity:
+            self.max_equity = self.equity
+            self.current_dd = 0.0
+        else:
+            self.current_dd = (self.max_equity - self.equity) / self.max_equity
+        
+        # DD slope (acceleration of drawdown)
+        self.dd_slope = self.current_dd - old_dd
+        
+        # Update simulated market
+        self._ema_diff = np.random.uniform(-0.5, 0.5)
+        self._rsi = np.random.uniform(-0.5, 0.5)
+        self._atr = np.random.uniform(0, 0.5)
+        self._volatility = abs(np.random.normal(0, 0.3))
+    
+    # =========================================================================
+    # Reward Functions
+    # =========================================================================
+    
+    def _calculate_alpha_reward(
+        self,
+        alpha_action: AlphaAction,
+        guardian_action: GuardianAction,
+        profit: float
+    ) -> float:
+        """
+        Calculate Alpha's reward.
+        
+        Alpha learns to:
+            - Make profitable trades
+            - Get Guardian approval
+            - Avoid triggering blocks/freezes
+        """
+        cfg = self.config
+        reward = 0.0
+        
+        # Profit component
+        if profit > 0:
+            reward += profit * cfg.alpha_profit_scale
+        else:
+            reward += profit * cfg.alpha_profit_scale * 1.5  # Penalize losses more
+        
+        # Guardian interaction
+        if guardian_action == GuardianAction.ALLOW:
+            reward += cfg.alpha_guardian_allow
+        elif guardian_action == GuardianAction.BLOCK:
+            reward += cfg.alpha_guardian_block
+        elif guardian_action == GuardianAction.FREEZE:
+            reward += cfg.alpha_trigger_freeze
+        
+        # HOLD during high DD is good
+        if alpha_action == AlphaAction.HOLD and self.current_dd > 0.05:
+            reward += cfg.alpha_hold_in_risk
+        
+        return reward
+    
+    def _calculate_guardian_reward(
+        self,
+        alpha_action: AlphaAction,
+        guardian_action: GuardianAction,
+        dd_change: float,
+        profit: float
+    ) -> float:
+        """
+        Calculate Guardian's reward.
+        
+        Guardian learns to:
+            - Avoid DD spikes
+            - Preserve profits
+            - Not over-block (kill opportunity)
+        """
+        cfg = self.config
+        reward = 0.0
+        
+        # DD avoided (blocked a trade that would have caused DD)
+        if guardian_action >= GuardianAction.BLOCK and dd_change > 0:
+            reward += cfg.guardian_dd_avoided
+            self.dd_avoided_count += 1
+        
+        # Profit preserved (allowed trade that was profitable)
+        if guardian_action == GuardianAction.ALLOW and profit > 0:
+            reward += cfg.guardian_profit_preserved
+        
+        # Over-blocking penalty
+        if guardian_action >= GuardianAction.BLOCK and dd_change <= 0:
+            reward += cfg.guardian_over_block  # Blocked unnecessarily
+        
+        # Late block (DD already happened)
+        if guardian_action >= GuardianAction.BLOCK and self.dd_slope > 0.05:
+            reward += cfg.guardian_late_block
+        
+        # Unnecessary freeze
+        if guardian_action == GuardianAction.FREEZE and self.current_dd < 0.03:
+            reward += cfg.guardian_unnecessary_freeze
+        
+        return reward
+    
+    # =========================================================================
+    # Info
+    # =========================================================================
+    
+    def _get_info(self) -> Dict[str, Any]:
+        """Get step info."""
+        return {
+            "step": self.step_count,
+            "equity": self.equity,
+            "current_dd": self.current_dd,
+            "positions": self.positions,
+            "blocks": self.blocks_count,
+            "freezes": self.freezes_count,
+            "dd_avoided": self.dd_avoided_count,
+            "profit_total": self.profit_total,
+            "is_frozen": self.is_frozen
         }
-        rewards = {
-            "alpha": -50,
-            "guardian": -100,
-        }
-        return obs, rewards, True, {"kill": True}
+    
+    def render(self):
+        """Render current state."""
+        print(
+            f"[Step {self.step_count}] Equity=${self.equity:.2f} | "
+            f"DD={self.current_dd:.1%} | Blocks={self.blocks_count} | "
+            f"Freezes={self.freezes_count} | Profit=${self.profit_total:.2f}"
+        )
 
 
 # =============================================================================
-# Training Helper
+# CLI Test
 # =============================================================================
 
-def train_multi_agent(
-    env: TradingEnvMultiAgent,
-    alpha_agent,
-    guardian_agent,
-    episodes: int = 1000,
-    max_steps: int = 500
-) -> Dict[str, List[float]]:
-    """
-    Train multi-agent system.
+if __name__ == "__main__":
+    print("=" * 60)
+    print("Multi-Agent Trading Environment Test")
+    print("=" * 60)
     
-    Args:
-        env: Trading environment
-        alpha_agent: Alpha RL agent
-        guardian_agent: Guardian RL agent
-        episodes: Number of episodes
-        max_steps: Max steps per episode
+    env = MultiAgentTradingEnv()
+    obs, _ = env.reset()
     
-    Returns:
-        Training history
-    """
-    history = {
-        "alpha_rewards": [],
-        "guardian_rewards": [],
-        "episode_lengths": [],
-        "kill_count": 0,
-    }
+    print(f"\nAlpha obs shape: {obs['alpha'].shape}")
+    print(f"Guardian obs shape: {obs['guardian'].shape}")
     
-    for ep in range(episodes):
-        obs = env.reset()
-        episode_alpha_reward = 0
-        episode_guardian_reward = 0
+    print("\n--- Running 20 random steps ---\n")
+    
+    total_alpha_reward = 0
+    total_guardian_reward = 0
+    
+    for i in range(20):
+        actions = {
+            "alpha": env.alpha_action_space.sample(),
+            "guardian": env.guardian_action_space.sample()
+        }
         
-        for step in range(max_steps):
-            # Get actions from both agents
-            alpha_action = {
-                "entry": 1 if np.random.random() < 0.3 else 0,
-                "pyramid": 1 if np.random.random() < 0.2 else 0,
-                "aggression": np.random.uniform(0.5, 1.5),
-            }
-            
-            guardian_action = {
-                "risk_mult": np.random.uniform(0.5, 1.0),
-                "freeze": np.random.random() < 0.1,
-            }
-            
-            actions = {
-                "alpha": alpha_action,
-                "guardian": guardian_action,
-            }
-            
-            obs, rewards, done, info = env.step(actions)
-            
-            episode_alpha_reward += rewards["alpha"]
-            episode_guardian_reward += rewards["guardian"]
-            
-            if done:
-                if info.get("kill"):
-                    history["kill_count"] += 1
-                break
+        obs, rewards, terminated, truncated, info = env.step(actions)
         
-        history["alpha_rewards"].append(episode_alpha_reward)
-        history["guardian_rewards"].append(episode_guardian_reward)
-        history["episode_lengths"].append(step + 1)
+        total_alpha_reward += rewards["alpha"]
+        total_guardian_reward += rewards["guardian"]
         
-        if (ep + 1) % 100 == 0:
-            avg_alpha = np.mean(history["alpha_rewards"][-100:])
-            avg_guardian = np.mean(history["guardian_rewards"][-100:])
-            logger.info(
-                f"Episode {ep+1}: Alpha={avg_alpha:.1f}, "
-                f"Guardian={avg_guardian:.1f}, "
-                f"Kills={history['kill_count']}"
-            )
+        alpha_name = AlphaAction(actions["alpha"]).name
+        guardian_name = GuardianAction(actions["guardian"]).name
+        
+        print(
+            f"Step {i+1}: Alpha={alpha_name:5s} Guardian={guardian_name:10s} | "
+            f"R_alpha={rewards['alpha']:+.2f} R_guard={rewards['guardian']:+.2f}"
+        )
+        
+        if terminated or truncated:
+            print("\n--- Episode ended ---")
+            break
     
-    return history
+    print(f"\nTotal Alpha Reward: {total_alpha_reward:.2f}")
+    print(f"Total Guardian Reward: {total_guardian_reward:.2f}")
+    print(f"Final info: {info}")
+    print("=" * 60)

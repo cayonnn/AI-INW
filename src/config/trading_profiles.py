@@ -81,6 +81,23 @@ class ModelConfig:
 
 
 @dataclass
+class CompetitionConfig:
+    """Competition specific envelope (Fairness constraints)."""
+    enabled: bool
+    max_daily_loss_limit: float     # Absolute hard cap (16%)
+    min_margin_level: float         # Minimum margin level (1.5%)
+    max_risk_flex: float            # Max multiplier for risk (e.g. 1.2x)
+
+
+@dataclass
+class GovernanceEnvelope:
+    """Hard governance bounds for Auto-Tuner (Constitution)."""
+    max_daily_loss_range: tuple[float, float]   # (Min, Max) %
+    margin_buffer_range: tuple[float, float]    # (Min, Max) %
+    risk_per_trade_range: tuple[float, float]   # (Min, Max) %
+
+
+@dataclass
 class TradingProfile:
     """Complete trading profile."""
     mode: TradingMode
@@ -92,6 +109,8 @@ class TradingProfile:
     sltp: SLTPConfig
     trailing: TrailingConfig
     model: ModelConfig
+    competition: CompetitionConfig = field(default_factory=lambda: CompetitionConfig(False, 0.0, 0.0, 1.0))
+    envelope: GovernanceEnvelope = field(default_factory=lambda: GovernanceEnvelope((0, 100), (0, 100), (0, 100)))
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary for logging/serialization."""
@@ -103,6 +122,10 @@ class TradingProfile:
                 "max_open_positions": self.risk.max_open_positions,
                 "max_daily_loss": self.risk.max_daily_loss,
                 "allow_correlation": self.risk.allow_correlation,
+            },
+            "competition": {
+                "enabled": self.competition.enabled,
+                "max_daily_loss_limit": self.competition.max_daily_loss_limit,
             },
             "entry": {
                 "cooldown_bars": self.entry.cooldown_bars,
@@ -225,12 +248,12 @@ AGGRESSIVE_PROFILE = TradingProfile(
     description="Max ROI, accept high DD, fast iteration",
     
     risk=RiskConfig(
-        risk_per_trade=2.0,          # 1.5% - 3.0%
+        risk_per_trade=2.0,          # 2.0% Aggressive
         max_open_positions=6,         # 5 - 8
-        max_daily_loss=10.0,          # 8% - 12%
-        max_weekly_loss=20.0,
+        max_daily_loss=14.0,          # 14% (Base Limit)
+        max_weekly_loss=25.0,
         allow_correlation=True,       # ✅ Allow correlated
-        hard_equity_dd_kill=15.0,     # Kill switch at 15%
+        hard_equity_dd_kill=10.0,     # Kill switch at 10% (Live Patch Synced)
     ),
     
     entry=EntryConfig(
@@ -266,6 +289,19 @@ AGGRESSIVE_PROFILE = TradingProfile(
         retrain_winrate_trigger=45.0, # Retrain if WR < 45%
         model_error_kill=5.0,         # Kill at 5% error rate
     ),
+    
+    competition=CompetitionConfig(
+        enabled=True,
+        max_daily_loss_limit=16.0,    # Envelope Cap (Fairness)
+        min_margin_level=1.5,         # Aggressive margin floor
+        max_risk_flex=1.2             # Max 20% deviation from limit
+    ),
+    
+    envelope=GovernanceEnvelope(
+        max_daily_loss_range=(12.0, 16.0),    # Hard bounds: 12% - 16%
+        margin_buffer_range=(1.5, 2.5),       # Keep 1.5% - 2.5% free
+        risk_per_trade_range=(1.5, 2.5)       # Flex risk between 1.5% and 2.5%
+    )
 )
 
 

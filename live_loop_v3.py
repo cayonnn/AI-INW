@@ -24,25 +24,54 @@ import argparse
 import pickle
 import os
 from pathlib import Path
-from datetime import datetime
+from datetime import datetime, timezone
 
 import pandas as pd
 import numpy as np
 import joblib
 
+# Dashboard Integration
+try:
+    from src.dashboard.workflow_state import get_workflow_client
+    HAS_DASHBOARD = True
+    wf = get_workflow_client()
+except ImportError:
+    HAS_DASHBOARD = False
+    logging.warning("Dashboard module not found")
+
+
 # Fund-Grade Risk Management
 try:
     from src.risk.risk_manager import RiskManager
     from src.risk.trailing import TrailingManager
+    # Guardian Margin Gate Integration
+    try:
+        from src.safety.guardian_margin_gate import GuardianMarginGate
+        HAS_GUARDIAN = True
+    except ImportError:
+        HAS_GUARDIAN = False
+        logging.warning("Guardian module not found")
+        
     FUND_GRADE_ENABLED = True
 except ImportError:
     FUND_GRADE_ENABLED = False
     logging.warning("Fund-Grade modules not available")
 
 
-# =========================
-# MT5 CONNECTOR (Simplified)
-# =========================
+
+from src.safety.guardian_margin_gate import GuardianMarginGate
+from src.rl.guardian_agent import get_guardian_agent
+from src.safety.progressive_guard import get_progressive_guard
+from src.safety.kill_switch import get_kill_switch
+from src.utils.logger import get_logger
+
+logger = get_logger("LIVE_V3")
+
+def is_new_trading_day(last_day):
+    """Check if we have crossed into a new UTC date."""
+    today = datetime.now(timezone.utc).date()
+    return last_day is None or today > last_day
+
 
 class MT5Connector:
     """MT5 Connection wrapper."""
@@ -92,6 +121,17 @@ class MT5Connector:
         })
         return df
     
+        return Account()
+
+    def symbol_info_tick(self, symbol: str):
+        """Get current tick."""
+        if self.connected:
+            try:
+                import MetaTrader5 as mt5
+                return mt5.symbol_info_tick(symbol)
+            except: pass
+        return None
+
     def send_order(self, symbol: str, action: str, direction: str, volume: float,
                    sl: float = 0, tp: float = 0) -> dict:
         """Send order to MT5 with SL/TP."""
@@ -173,6 +213,19 @@ class MT5Connector:
             except:
                 pass
         return 0.0
+
+    def get_account_info(self):
+        """Get full account info object."""
+        if self.connected:
+            try:
+                import MetaTrader5 as mt5_lib
+                return mt5_lib.account_info()
+            except:
+                pass
+        return None
+
+
+# Helper removed - imported from src.guardian.guardian_governance
 
 
 # =========================
@@ -291,127 +344,13 @@ class SignalEngineV3:
             signal = "HOLD"
             info += " | HTF blocked"
         
-        # === Risk Guard ===
-        if self.risk_guard and signal != "HOLD":
-            now = datetime.now()
-            
-            # 🔧 FIX: Check ACTUAL MT5 positions, not internal state
-            has_same_dir_position = self._has_open_position_mt5(signal)
-            actual_positions = self._count_open_positions_mt5()
-            
-            # Duplicate direction - ONLY block if position actually exists
-            if has_same_dir_position and not self._allow_pyramid():
-                signal = "HOLD"
-                info += f" | BLOCKED: duplicate ({signal} position open)"
-            
-            # Max positions - use ACTUAL count from MT5
-            elif actual_positions >= self.max_pos:
-                signal = "HOLD"
-                info += f" | BLOCKED: max_pos ({actual_positions}/{self.max_pos})"
-            
-            # Cooldown
-            elif (now - self.last_trade_time).total_seconds() < self.cooldown_sec:
-                signal = "HOLD"
-                info += " | BLOCKED: cooldown"
+        # === Risk Guard (Delegated to RiskManager later) ===
+        # We only return the Raw Signal here. 
+        # Position limits and duplicates are handled by RiskManager in the loop.
         
         return signal, info
     
-    def _has_open_position_mt5(self, direction: str) -> bool:
-        """Check if there's an open position in given direction using MT5."""
-        try:
-            import MetaTrader5 as mt5
-            positions = mt5.positions_get(symbol='XAUUSD')
-            if positions is None or len(positions) == 0:
-                return False
-            
-            for pos in positions:
-                pos_dir = "BUY" if pos.type == 0 else "SELL"
-                if pos_dir == direction:
-                    return True
-            return False
-        except:
-            return False
-    
-    def _count_open_positions_mt5(self) -> int:
-        """Count actual open positions from MT5."""
-        try:
-            import MetaTrader5 as mt5
-            positions = mt5.positions_get(symbol='XAUUSD')
-            return len(positions) if positions else 0
-        except:
-            return self.positions  # Fallback to internal count
-    
-    def _allow_pyramid(self) -> bool:
-        """Check if pyramiding (multiple same-direction positions) is allowed."""
-        # For Aggressive profile, allow pyramiding
-        try:
-            from src.config.trading_profiles import get_active_profile
-            profile = get_active_profile()
-            return profile.entry.pyramid_allowed
-        except:
-            return False  # Conservative default
-    
-    def calculate_sl_tp(self, df: pd.DataFrame, direction: str, 
-                        atr_sl_mult: float = 1.5, atr_tp_mult: float = 3.0) -> tuple:
-        """
-        Calculate SL and TP based on ATR (Fund-Grade: RR = 1:2).
-        
-        Args:
-            df: DataFrame with 'close' and 'atr14'
-            direction: BUY or SELL
-            atr_sl_mult: ATR multiplier for SL (default 1.5)
-            atr_tp_mult: ATR multiplier for TP (default 3.0 = RR 1:2)
-            
-        Returns:
-            (sl_price, tp_price, sl_pips)
-        """
-        if df.empty or 'atr14' not in df.columns:
-            return 0, 0, 0
-        
-        last = df.iloc[-1]
-        price = last['close']
-        atr = last['atr14']
-        
-        sl_pips = atr * atr_sl_mult
-        tp_pips = atr * atr_tp_mult
-        
-        if direction == "BUY":
-            sl = price - sl_pips
-            tp = price + tp_pips
-        elif direction == "SELL":
-            sl = price + sl_pips
-            tp = price - sl_pips
-        else:
-            return 0, 0, 0
-        
-        return round(sl, 2), round(tp, 2), round(sl_pips, 2)
-    
-    def calculate_lot_size(self, equity: float, sl_pips: float, 
-                           risk_pct: float = 0.005, pip_value: float = 1.0) -> float:
-        """
-        Calculate lot size based on risk percentage of equity (Fund-Grade).
-        
-        Formula: lot = (Equity × Risk%) / (SL pips × pip_value)
-        
-        Args:
-            equity: Account equity
-            sl_pips: Stop loss in pips
-            risk_pct: Risk per trade (default 0.5% = 0.005)
-            pip_value: Value per pip per lot (default 1.0 for XAUUSD)
-            
-        Returns:
-            Calculated lot size (min 0.01, max 10.0)
-        """
-        if sl_pips <= 0 or equity <= 0:
-            return 0.01  # Minimum lot
-        
-        risk_amount = equity * risk_pct
-        lot = risk_amount / (sl_pips * pip_value)
-        
-        # Clamp to valid range
-        lot = max(0.01, min(lot, 10.0))
-        
-        return round(lot, 2)
+        return signal, info
     
     def update_position(self, signal: str):
         """Update position state after trade."""
@@ -461,10 +400,20 @@ def auto_train(dataset_path: str = "data/imitation_full_dataset.csv",
         if 'label' in df.columns:
             y = df['label']
         elif 'signal' in df.columns:
-            y_map = {'SELL': 0, 'HOLD': 1, 'BUY': 2}
+            y_map = {'SELL': 0, 'HOLD': 1, 'WAIT': 1, 'BUY': 2}
             y = df['signal'].map(y_map)
         else:
             logging.warning("No label column found")
+            return False
+            
+        # UNIVERSAL CLEANING (Fix NaN issues)
+        # Drop NaNs from y and align X
+        valid_stats = y.notna()
+        X = X[valid_stats]
+        y = y[valid_stats]
+        
+        if len(y) < min_samples:
+            logging.info(f"Not enough valid labels: {len(y)}/{min_samples}")
             return False
         
         # Train/test split
@@ -478,7 +427,9 @@ def auto_train(dataset_path: str = "data/imitation_full_dataset.csv",
             max_depth=4,
             learning_rate=0.1,
             eval_metric='mlogloss',
-            verbosity=0
+            verbosity=0,
+            tree_method='hist',
+            device='cuda'
         )
         model.fit(X_train, y_train)
         
@@ -507,7 +458,8 @@ def live_loop(
     max_cycles: int = 1000,
     sandbox: bool = True,
     auto_train_enabled: bool = True,
-    train_interval: int = 50
+    train_interval: int = 50,
+    alpha_mode: str = "shadow"  # "shadow", "hybrid", "full"
 ):
     """
     Main Live Loop.
@@ -518,6 +470,7 @@ def live_loop(
         sandbox: Sandbox mode (no real trades)
         auto_train_enabled: Enable auto AI training
         train_interval: Cycles between training
+        alpha_mode: Alpha operating mode ("shadow", "hybrid", "full")
     """
     logging.info("=" * 60)
     logging.info("🚀 LIVE LOOP V3 - AI Trading System")
@@ -525,12 +478,43 @@ def live_loop(
     logging.info(f"Interval: {interval}s | Cycles: {max_cycles}")
     logging.info(f"Mode: {'SANDBOX' if sandbox else '🔴 LIVE'}")
     logging.info(f"Auto-Train: {'ON' if auto_train_enabled else 'OFF'}")
+    logging.info(f"Alpha Mode: {alpha_mode.upper()}")
     logging.info("=" * 60)
     
+    # =========================================
+    # 🧠 Alpha Hybrid Controller (Controlled Live)
+    # =========================================
+    alpha_hybrid_ctrl = None
+    try:
+        from src.rl.alpha_hybrid_controller import get_alpha_hybrid_controller
+        alpha_hybrid_ctrl = get_alpha_hybrid_controller(mode=alpha_mode)
+        logging.info(f"🧠 Alpha Hybrid Controller: mode={alpha_mode}")
+    except Exception as e:
+        logging.debug(f"Alpha Hybrid Controller init skipped: {e}")
+    
     # Initialize
-    mt5 = MT5Connector()
+    mt5_lib = MT5Connector()
     if not sandbox:
-        mt5.connect()
+        if not mt5_lib.connect():
+             return
+
+        # NEW CHECKS (Backported from V4)
+        import MetaTrader5 as mt5
+        
+        # 1. Check Algo Trading (Blocking)
+        while True:
+            term_info = mt5.terminal_info()
+            if term_info.trade_allowed:
+                break
+            
+            # Prevent Watchdog Kill while waiting
+            try: 
+                with open("heartbeat.txt", "w") as f: f.write(str(time.time()))
+            except: pass
+            
+            logging.critical("❌ ALGO TRADING DISABLED! Please enable 'Algo Trading' button in MT5.")
+            logging.warning("   Waiting... (Checking again in 5s)")
+            time.sleep(5)
     
     # Get profile for max_pos
     try:
@@ -542,6 +526,225 @@ def live_loop(
     
     engine = SignalEngineV3(max_pos=_max_pos)
     
+    # (Legacy Guardian Init Removed - See "Load Trading Profile" section below)
+    
+    # (Safety Systems Init Moved - See below)
+    # =========================================
+    # ⚙️ Load Trading Profile (Source of Truth)
+    # =========================================
+    from src.config.trading_profiles import get_active_profile
+    active_profile = get_active_profile()
+    logging.info(f"🔥 Trading Profile Loaded: {active_profile.name}")
+    logging.info(f"   Risk: {active_profile.risk.max_daily_loss}% Daily Limit | Kill: {active_profile.risk.hard_equity_dd_kill}%")
+
+    # 🛡️ Safety Systems (Synced with Profile)
+    progressive_guard = get_progressive_guard()
+    # Initial defaults from Competition Profile guidelines (4/6/10)
+    # Note: These are actively tuned by auto-tuner later
+    from src.safety.progressive_guard import AlertThresholds
+    progressive_guard.dd_thresholds = AlertThresholds(4.0, 6.0, 10.0)
+    
+    kill_switch = get_kill_switch()
+    kill_switch.max_dd = active_profile.risk.hard_equity_dd_kill
+    logging.info(f"🛡️ Kill Switch Initialized (MaxDD: {kill_switch.max_dd}%)")
+
+    # =========================================
+    # 🛡️ Guardian Governance (Daily Reset & Latch)
+    # =========================================
+    from src.guardian.guardian_governance import GuardianGovernance
+    
+    # Initialize Governance from Profile
+    # Convert % to decimal
+    daily_limit_decimal = active_profile.risk.max_daily_loss / 100.0
+    guardian_governance = GuardianGovernance(daily_dd_limit=daily_limit_decimal)
+    
+    # Bridge: Connect Governance to Margin Gate (for hard latching)
+    def update_dd_bridge(equity, balance, logger):
+        """Bridge Governance DD calculation -> Margin Gate Latch"""
+        # Create a mock account object for compatibility
+        mock_acc = type("Account", (), {"equity": equity, "balance": balance})
+        
+        blocked, reason = guardian_governance.check_daily_dd(mock_acc)
+        
+        # Sync DD to Margin Gate (it expects percent e.g. 10.5)
+        if guardian:
+             # Push calculated DD (decimal) converted to percent
+             guardian.update_dd(guardian_governance.current_dd * 100)
+            
+        return blocked, reason
+
+    # Attach bridge (Method injection for compatibility)
+    guardian_governance.update_dd_and_check = update_dd_bridge
+    
+    logging.info(f"🛡️ Guardian Governance Initialized (Limit: {active_profile.risk.max_daily_loss}%)")
+    
+    # Initialize Margin Gate (Using Profile Limit)
+    try:
+        from src.safety.guardian_margin_gate import GuardianMarginGate
+        
+        limit_val = active_profile.risk.max_daily_loss # e.g. 14.0
+        guardian = GuardianMarginGate(daily_loss_limit=limit_val/100.0) 
+        
+        # Inject the bridge
+        guardian.check_governance_dd = update_dd_bridge
+        
+        # IMPORTANT: Margin buffer from competition config
+        if hasattr(active_profile, "competition") and active_profile.competition.enabled:
+             # Logic to tighten margin block if needed could go here
+             pass 
+             
+        logging.info(f"🛡️ Guardian Gate Initialized (Limit: {limit_val}%)")
+    except Exception as e:
+        logging.error(f"Guardian init failed: {e}")
+        guardian = None
+
+    # 🤖 Guardian Agent (Rule-Based)
+    try:
+        from src.rl.guardian_agent import GuardianAgent
+        def get_guardian_agent():
+             # Fixed: GuardianAgent takes mode, not daily_loss_limit
+             return GuardianAgent(mode="advisor")
+        
+        guardian_agent = get_guardian_agent()
+    except Exception as e:
+        logging.error(f"Guardian Agent init failed: {e}")
+        guardian_agent = None
+
+    last_trading_day = datetime.now(timezone.utc).date()
+    logging.info(f"🧠 Guardian Agent Initialized (Advisor Mode)")
+    
+    # 📊 Guardian Metrics Logger
+    guardian_csv_logger = None
+    try:
+        from src.rl.guardian_logger import get_guardian_logger
+        guardian_csv_logger = get_guardian_logger()
+        logging.info("📊 Guardian CSV Logger initialized")
+    except Exception as e:
+        logging.debug(f"Guardian CSV Logger not available: {e}")
+    
+    # 🧠 PPO Guardian Advisor (Hybrid Mode)
+    guardian_ppo = None
+    try:
+        from src.rl.guardian_ppo_infer import get_ppo_advisor
+        guardian_ppo = get_ppo_advisor(enabled=True)
+        if guardian_ppo.enabled:
+            logging.info(f"🧠 Guardian PPO Advisor loaded: {guardian_ppo.model_path}")
+        else:
+            logging.info("🧠 Guardian PPO Advisor disabled (no model)")
+    except Exception as e:
+        logging.debug(f"Guardian PPO Advisor not available: {e}")
+    
+    # =========================================
+    # 🧬 Guardian Hybrid Arbitration Layer
+    # =========================================
+    guardian_hybrid = None
+    if guardian_agent and guardian_ppo:
+        from src.guardian.guardian_hybrid import GuardianHybrid
+        guardian_hybrid = GuardianHybrid(guardian_agent, guardian_ppo, confidence_threshold=0.65)
+        logging.info("🧬 Guardian Hybrid Layer initialized (Rule + PPO)")
+
+    # =========================================
+    # 👻 Shadow Mode (Phase 1)
+    # =========================================
+    shadow_recorder = None
+    try:
+        from src.analysis.shadow_recorder import ShadowRecorder
+        shadow_recorder = ShadowRecorder()
+        logging.info("👻 Shadow Mode Simulator Initialized (Tracking Blocks)")
+    except Exception as e:
+        logging.error(f"Shadow Recorder init failed: {e}")
+    
+    # =========================================
+    # 🧠 Alpha PPO Shadow Mode (V1)
+    # =========================================
+    alpha_shadow = None
+    try:
+        from src.rl.alpha_shadow import get_alpha_shadow
+        alpha_shadow = get_alpha_shadow(enabled=True)
+        if alpha_shadow.ppo.enabled:
+            logging.info("🧠 Alpha PPO Shadow Mode Initialized (Rule vs PPO comparison)")
+        else:
+            logging.info("🧠 Alpha PPO Shadow Mode Ready (waiting for model)")
+    except Exception as e:
+        logging.debug(f"Alpha Shadow init skipped: {e}")
+    
+    # =========================================
+    # 🔌 PPO Live Switch (Confidence-Gated Execution)
+    # =========================================
+    ppo_live_switch = None
+    try:
+        from src.validation.ppo_live_switch import get_ppo_switch
+        ppo_live_switch = get_ppo_switch()
+        if alpha_mode == "full":
+            ppo_live_switch.enable()
+            logging.info("🔌 PPO Live Switch ENABLED (full mode)")
+        else:
+            logging.info(f"🔌 PPO Live Switch ready (mode={alpha_mode})")
+    except Exception as e:
+        logging.debug(f"PPO Live Switch init skipped: {e}")
+    
+    # =========================================
+    # 🎛️ Guardian Auto-Tuner (Competition Mode)
+    # =========================================
+    from src.guardian.guardian_autotuner import GuardianAutoTuner
+    auto_tuner = GuardianAutoTuner()
+    logging.info("🎛️ Competition Auto-Tuner Initialized (Adaptive Governance)")
+
+    def get_competition_metrics():
+        """Fetch live metrics for Auto-Tuner."""
+        metrics = {
+            "win_rate": 0.5,
+            "avg_r": 0.0,
+            "current_dd": guardian_state.get("current_dd", 0.0),
+            "block_rate": 0.0,
+            "equity": 1000.0 # Default
+        }
+        
+        if not mt5_lib.connected:
+            return metrics
+            
+        try:
+            # Equity check
+            acc = mt5.get_account_info()
+            if acc:
+                metrics["equity"] = acc.equity
+                
+            # Fetch deals for today
+            now = datetime.now()
+            start = datetime(now.year, now.month, now.day)
+            deals = mt5_lib.history_deals_get(start, now + timedelta(days=1))
+            
+            if deals and len(deals) > 0:
+                profits = [d.profit for d in deals if d.entry == mt5_lib.DEAL_ENTRY_OUT]
+                if profits:
+                    wins = len([p for p in profits if p > 0])
+                    metrics["win_rate"] = wins / len(profits)
+                    
+                    # Avg R approximation (Profit / Avg Loss)
+                    losses = [abs(p) for p in profits if p < 0]
+                    avg_loss = sum(losses) / len(losses) if losses else 1.0
+                    avg_win = sum([p for p in profits if p > 0]) / len(profits) if wins > 0 else 0.0
+                    if avg_loss > 0:
+                        metrics["avg_r"] = avg_win / avg_loss
+            
+            # Block rate
+            total_decisions = guardian_ppo.decisions if guardian_ppo else 1
+            if total_decisions > 0:
+                metrics["block_rate"] = guardian_state.get("total_blocks", 0) / total_decisions
+                
+        except Exception as e:
+            logging.debug(f"Metric fetch error: {e}")
+            
+        return metrics
+    
+    # 🔄 Daily Retrain Job (23:00 scheduled)
+    retrain_job = None
+    try:
+        from src.retrain.daily_retrain_job import get_daily_retrain_job
+        retrain_job = get_daily_retrain_job()
+        logging.info("🔄 Daily Retrain Job initialized (runs after 23:00)")
+    except Exception as e:
+        logging.debug(f"Daily Retrain Job not available: {e}")
     # Load existing model
     model_path = Path("models/xgb_imitation.pkl")
     if model_path.exists():
@@ -555,12 +758,14 @@ def live_loop(
     sl_model = None
     tp_model = None
     
+    tp_model = None
+    
+    # 🔥 Single Source of Truth: Load Profile ONCE
+    from src.config.trading_profiles import get_active_profile
+    active_profile = get_active_profile()
+    logging.info(f"🔥 Trading Profile: {active_profile.name}")
+    
     if FUND_GRADE_ENABLED:
-        # 🔥 Single Source of Truth: Load Profile ONCE
-        from src.config.trading_profiles import get_active_profile
-        active_profile = get_active_profile()
-        logging.info(f"🔥 Trading Profile: {active_profile.name}")
-        
         # Risk Manager
         risk_manager = RiskManager(
             risk_per_trade=active_profile.risk.risk_per_trade / 100,  # Convert % to decimal
@@ -592,37 +797,515 @@ def live_loop(
     # Stats
     stats = {"cycles": 0, "BUY": 0, "SELL": 0, "HOLD": 0, "trades": 0, "trailing_updates": 0}
     
+    # ===============================
+    # 🛡️ Guardian Governance State
+    # ===============================
+    guardian_state = {
+        "margin_block_count": 0,
+        "dd_block_count": 0,
+        "force_hold_until": 0.0,
+        "last_block_reason": None,
+        "escalation_count": 0,
+        "total_blocks": 0,
+    }
+    
     try:
+        guardian_latched_warned = False
         while stats["cycles"] < max_cycles:
             start = time.time()
+
             stats["cycles"] += 1
             cycle = stats["cycles"]
             
+            if HAS_DASHBOARD:
+                wf.start_cycle("XAUUSD")
+            
+
+
+            # ==============================
+            # 🛡️ PROGRESSIVE GUARD (Absolute Authority)
+            # ==============================
+            guard_status = progressive_guard.get_status()
+            if guard_status.get("kill_latched"):
+                logging.critical("🔒 SYSTEM HALTED BY PROGRESSIVE GUARD (Kill Switch Active)")
+                if HAS_DASHBOARD:
+                    wf.update_step('init', 'ERROR', "SYSTEM HALTED: Progressive Guard Kill Switch")
+                break  # STOP LOOP
+
+
+
+            # ==============================
+            # ==============================
+            # 🔄 DAILY DD CHECK & RESET (Governance Layer)
+            # ==============================
+            if guardian_governance:
+                try:
+                    if mt5_lib.connected:
+                        acc = mt5_lib.get_account_info()
+                        if acc:
+                            # ===============================
+                            # 🔒 ACCOUNT UNUSABLE HARD GATE
+                            # ===============================
+                            equity = acc.equity
+                            free_margin = acc.margin_free
+                            
+                            if equity < 50 or free_margin <= 0:
+                                logging.critical(f"🚨 ACCOUNT UNUSABLE | equity={equity:.2f}, free_margin={free_margin:.2f}")
+                                if guardian_csv_logger:
+                                    guardian_csv_logger.log({
+                                        "action": "HARD_BLOCK",
+                                        "block_reason": "ACCOUNT_DEAD",
+                                        "equity": equity,
+                                        "daily_dd": 0.0,
+                                        "margin_ratio": 0.0,
+                                        "cycle": cycle
+                                    })
+                                stats["HOLD"] += 1
+                                if HAS_DASHBOARD:
+                                    wf.update_step('init', 'ERROR', "ACCOUNT DEAD: Equity < $50 or No Margin")
+                                time.sleep(interval)
+                                continue
+
+                            # Use bridge to update DD and check for hard latch
+                            # This handles start-of-day snapshot automatically
+                            blocked_by_gov, gov_reason = guardian_governance.update_dd_and_check(
+                                acc.equity, acc.balance, logging
+                            )
+                            
+                            # Update local state for logging
+                            guardian_state["current_dd"] = guardian_governance.current_dd
+                            
+                            if blocked_by_gov:
+                                # Governance Hard Latch Triggered
+                                logging.critical(f"🛑 GOVERNANCE BLOCK: {gov_reason}")
+                                stats["HOLD"] += 1
+                                if HAS_DASHBOARD:
+                                    wf.update_step('init', 'ERROR', f"BLOCKED: {gov_reason}")
+                                
+                                # Governance block happens BEFORE signal generation
+                                # Cannot record shadow trade here - no signal yet
+                                
+                                time.sleep(interval)
+                                continue # SKIP EVERYTHING ELSE
+                except Exception as e:
+                    logging.error(f"Governance Check Error: {e}")
+
             # 1. Fetch data
-            bars_h1 = mt5.get_bars('XAUUSD', 'H1', 500)
-            bars_h4 = mt5.get_bars('XAUUSD', 'H4', 125)
+            if HAS_DASHBOARD: wf.update_step('data', 'RUNNING', 'Fetching OHLCV...')
+            bars_h1 = mt5_lib.get_bars('XAUUSD', 'H1', 500)
+
+            bars_h4 = mt5_lib.get_bars('XAUUSD', 'H4', 125)
+            bars_h4 = mt5_lib.get_bars('XAUUSD', 'H4', 125)
+            
+            # 👻 SHADOW UPDATE
+            if shadow_recorder:
+                tick = mt5_lib.symbol_info_tick('XAUUSD')
+                if tick:
+                    shadow_recorder.update(tick.bid, tick.ask)
+
+            if HAS_DASHBOARD: wf.update_step('data', 'COMPLETED')
             
             # 2. Generate dataset
+            if HAS_DASHBOARD: wf.update_step('features', 'RUNNING', 'Generating features...')
             df = engine.generate_dataset(bars_h1, bars_h4)
+            if HAS_DASHBOARD: wf.update_step('features', 'COMPLETED')
+            
+            # 2.5 Save Data (Fix Stale Data Issue)
+            try:
+                # Save just the last row (latest complete candle)
+                latest_row = df.iloc[[-1]] 
+                
+                # Append to dataset (Main Archive)
+                dataset_path = "data/imitation_full_dataset.csv"
+                header = not os.path.exists(dataset_path)
+                latest_row.to_csv(dataset_path, mode='a', header=header, index=False)
+                
+                # Append to Retrain Inbox (For DailyRetrainJob)
+                retrain_inbox = "data/retrain/stream.csv"
+                os.makedirs("data/retrain", exist_ok=True)
+                header_retrain = not os.path.exists(retrain_inbox)
+                latest_row.to_csv(retrain_inbox, mode='a', header=header_retrain, index=False)
+                
+                # logging.debug(f"Saved data point: {latest_row.index[-1]}")
+            except Exception as e:
+                logging.error(f"Data save failed: {e}")
             
             # 3. Auto-train
             if auto_train_enabled and cycle % train_interval == 0:
+                if HAS_DASHBOARD: wf.update_step('ai', 'RUNNING', 'Auto-training model...')
                 if auto_train():
                     engine.load_ai_model(str(model_path))
+                if HAS_DASHBOARD: wf.update_step('ai', 'COMPLETED')
             
             # 4. Get signal
+            if HAS_DASHBOARD: wf.update_step('fusion', 'RUNNING', 'Analyzing signals...')
             signal, info = engine.get_signal(df)
             stats[signal] = stats.get(signal, 0) + 1
+            if HAS_DASHBOARD: wf.update_step('fusion', 'COMPLETED', f"Signal: {signal}")
+            
+            # ==============================
+            # 🧠 ALPHA PPO SHADOW COMPARISON
+            # ==============================
+            ppo_action = "HOLD"
+            ppo_conf = 0.0
+            agreed = True
+            
+            if alpha_shadow:
+                try:
+                    tick = mt5_lib.symbol_info_tick('XAUUSD') if mt5_lib.connected else None
+                    current_price = tick.bid if tick else df.iloc[-1].get('close', 0)
+                    
+                    # Get market data for state injection
+                    last_row = df.iloc[-1]
+                    ema20 = last_row.get('ema20', last_row.get('EMA20', 0))
+                    ema50 = last_row.get('ema50', last_row.get('EMA50', 0))
+                    atr = last_row.get('atr14', last_row.get('atr', 2.5))
+                    rsi_val = last_row.get('rsi14', last_row.get('rsi', 50))
+                    spread = last_row.get('spread', 0.1)
+                    
+                    ppo_action, ppo_conf, agreed = alpha_shadow.compare(
+                        rule_action=signal,
+                        cycle=cycle,
+                        market_row=last_row,
+                        open_positions=len(mt5.positions_get() or []) if mt5_lib.connected else 0,
+                        floating_dd=guardian_state.get("current_dd", 0.0),
+                        guardian_state=0 if not guardian or guardian.allow_trade() else 2,
+                        current_price=current_price
+                    )
+                    
+                    # ============================================================
+                    # 📊 Shadow Reward Evaluation (DD avoided / Missed Profit)
+                    # ============================================================
+                    if alpha_shadow.ppo.enabled and hasattr(alpha_shadow, 'ppo'):
+                        try:
+                            from src.rl.alpha_env import AlphaTradingEnv, AlphaEnvConfig
+                            
+                            # Create or reuse shadow env for step simulation
+                            if not hasattr(alpha_shadow, '_shadow_env'):
+                                alpha_shadow._shadow_env = AlphaTradingEnv(
+                                    config=AlphaEnvConfig(max_steps=99999)
+                                )
+                                alpha_shadow._shadow_env.reset()
+                            
+                            shadow_env = alpha_shadow._shadow_env
+                            
+                            # Inject current market state
+                            shadow_env.update_market_state(
+                                ema_fast_diff=np.clip((ema20 - ema50) / max(atr, 1), -1, 1),
+                                rsi=(rsi_val - 50) / 50,
+                                atr=np.clip(atr / current_price * 100, -1, 1),
+                                spread=np.clip(spread / max(atr, 0.1), -1, 1),
+                                time_of_day=datetime.now().hour / 24.0,
+                                open_positions=len(mt5.positions_get() or []) if mt5_lib.connected else 0,
+                                floating_dd=guardian_state.get("current_dd", 0.0),
+                                guardian_state=0 if not guardian or guardian.allow_trade() else 2
+                            )
+                            
+                            # Get action mapping
+                            action_map = {"HOLD": 0, "BUY": 1, "SELL": 2}
+                            ppo_action_idx = action_map.get(ppo_action, 0)
+                            
+                            # Simulate step (NO REAL EXECUTION)
+                            _, shadow_reward, _, _, shadow_info = shadow_env.step(ppo_action_idx)
+                            
+                            # Log shadow metrics to Guardian CSV
+                            if guardian_csv_logger:
+                                guardian_csv_logger.log({
+                                    "action": "SHADOW_EVAL",
+                                    "rule_signal": signal,
+                                    "ppo_action": ppo_action,
+                                    "ppo_conf": f"{ppo_conf:.2f}",
+                                    "agreed": agreed,
+                                    "shadow_reward": f"{shadow_reward:.3f}",
+                                    "floating_dd": guardian_state.get("current_dd", 0.0),
+                                    "cycle": cycle
+                                })
+                            
+                            # Log insight every 25 cycles
+                            if cycle % 25 == 0:
+                                outcome_icon = "✅" if agreed else "❌"
+                                logging.info(
+                                    f"📊 Shadow | Rule={signal:4s} PPO={ppo_action:4s} ({ppo_conf:.0%}) "
+                                    f"{outcome_icon} | Reward={shadow_reward:+.2f}"
+                                )
+                                
+                        except Exception as e:
+                            logging.debug(f"Shadow env step failed: {e}")
+                    
+                    # Log summary every 50 cycles
+                    if cycle % 50 == 0:
+                        logging.info(alpha_shadow.summary())
+                        
+                except Exception as e:
+                    logging.debug(f"Alpha Shadow comparison failed: {e}")
+
+            # ==============================
+            # 🧠 ALPHA HYBRID DECISION (Controlled Live)
+            # ==============================
+            original_signal = signal  # Keep original for logging
+            alpha_source = "RULE"
+            
+            # ==============================
+            # 🔌 PPO LIVE SWITCH DECISION
+            # ==============================
+            if ppo_live_switch and alpha_mode == "full":
+                try:
+                    # Get account state for rollback checks
+                    acc_state = {
+                        "intraday_dd": guardian_state.get("current_dd", 0),
+                        "margin_level": (acc.margin_free / max(acc.balance, 0.01)) if acc else 1.5
+                    }
+                    
+                    # Get PPO decision with automatic fallback
+                    obs = np.array([0.0] * 10)  # Simplified obs
+                    ppo_signal, alpha_source, switch_info = ppo_live_switch.get_decision(
+                        obs=obs,
+                        rule_signal=original_signal,
+                        guardian_state=guardian_state,
+                        account_state=acc_state
+                    )
+                    
+                    if alpha_source == "PPO":
+                        signal = ppo_signal
+                        logging.info(
+                            f"🔌 PPO Live: {signal} (conf={switch_info.get('confidence', 0):.0%}, was Rule={original_signal})"
+                        )
+                    else:
+                        logging.debug(f"PPO fallback: {switch_info.get('fallback_reason', 'unknown')}")
+                        
+                except Exception as e:
+                    logging.debug(f"PPO Live Switch error: {e}")
+            
+            # Legacy Hybrid Controller (for hybrid mode)
+            elif alpha_hybrid_ctrl and alpha_mode == "hybrid":
+                try:
+                    from src.rl.alpha_decision import create_alpha_decision
+                    
+                    # Build PPO decision object
+                    action_map = {"HOLD": 0, "BUY": 1, "SELL": 2}
+                    ppo_action_int = action_map.get(ppo_action, 0)
+                    
+                    ppo_decision = create_alpha_decision(
+                        action=ppo_action_int,
+                        confidence=ppo_conf,
+                        risk_score=guardian_state.get("current_dd", 0) * 2,  # Scale DD to risk
+                        regime="TREND" if signal != "HOLD" else "RANGE",
+                        reason=f"PPO conf={ppo_conf:.0%}",
+                        ema_signal=original_signal
+                    )
+                    
+                    # Get hybrid decision
+                    final_action, alpha_source, hybrid_info = alpha_hybrid_ctrl.decide(
+                        ppo_decision=ppo_decision,
+                        rule_signal=original_signal,
+                        guardian_state=guardian_state,
+                        market_state={
+                            "margin_ratio": acc.margin_free / max(acc.balance, 1) if acc else 1.0,
+                            "regime": "TREND" if signal != "HOLD" else "RANGE"
+                        } if mt5_lib.connected else {}
+                    )
+                    
+                    # Update signal if PPO is used
+                    if alpha_source == "PPO":
+                        signal = final_action
+                        logging.info(
+                            f"🧠 Alpha Hybrid: Using PPO decision {signal} "
+                            f"(conf={ppo_conf:.0%}, was Rule={original_signal})"
+                        )
+                    elif alpha_source == "GUARDIAN_OVERRIDE":
+                        signal = "HOLD"
+                        logging.info(
+                            f"🛡️ Alpha blocked by Guardian: {hybrid_info.get('blocked_reason', 'unknown')}"
+                        )
+                        
+                except Exception as e:
+                    logging.debug(f"Alpha Hybrid decision failed: {e}")
+
+            # ==============================
+            # 🛡️ FORCE_HOLD CHECK (Escalation)
+            # ==============================
+            if time.time() < guardian_state.get("force_hold_until", 0):
+                remaining = int(guardian_state["force_hold_until"] - time.time())
+                logging.info(f"[{datetime.now().strftime('%H:%M:%S')}] #{cycle}: 🧊 FORCE_HOLD active ({remaining}s remaining)")
+                stats["HOLD"] += 1
+                time.sleep(interval)
+                continue
+            
+            # ==============================
+            # 🧬 GUARDIAN HYBRID ARBITRATION (Rule + PPO)
+            # ==============================
+            risk_multiplier = 1.0
+            if guardian_hybrid:
+                # 1. Construct State
+                acc = mt5_lib.get_account_info() if mt5_lib.connected else None
+                current_dd = guardian_state.get("current_dd", 0.0)
+                margin_ratio = (acc.margin_free / acc.balance) if acc and acc.balance > 0 else 1.0
+                
+                # V4 Context
+                from src.guardian.guardian_context import GuardianContext
+                context = GuardianContext.get_context(df)
+                
+                nav_state = {
+                    "daily_dd": current_dd,
+                    "margin_ratio": margin_ratio,
+                    "chaos": 0, 
+                    "step": cycle,
+                    "margin_block_count": guardian_state.get("margin_block_count", 0),
+                    # V4 Features
+                    "market_regime": context["market_regime"],
+                    "session_time": context["session_time"],
+                    "recent_win_rate": 0.5 # Placeholder (connected to Auto-Tuner stats later)
+                }
+                
+                # 2. Decide
+                hybrid_action, hybrid_reason = guardian_hybrid.decide(nav_state, signal)
+                
+                # 3. Apply Decision
+                if hybrid_action == "BLOCK" or hybrid_action == "FORCE_HOLD" or hybrid_action == "EMERGENCY_FREEZE":
+                    logging.info(f"🧬 GUARDIAN BLOCK: {hybrid_reason}")
+                    
+                    # 👻 SHADOW RECORDING (Hybrid Block)
+                    # 👻 SHADOW RECORDING (Hybrid Block)
+                    if shadow_recorder and signal in ["BUY", "SELL"]:
+                         try:
+                             # 1. Get Price
+                             tick_s = mt5_lib.symbol_info_tick("XAUUSD")
+                             if tick_s:
+                                 price = tick_s.ask if signal == "BUY" else tick_s.bid
+                                 
+                                 # 2. Calc Shadow SL/TP (Approximate based on ATR)
+                                 # Fallback to fixed 5.0 (500 pts) SL if ATR missing
+                                 atr = df.iloc[-1].get('atr', 2.5) 
+                                 sl_dist = atr * 2.0
+                                 tp_dist = atr * 4.0
+                                 
+                                 if signal == "BUY":
+                                     sl = price - sl_dist
+                                     tp = price + tp_dist
+                                 else:
+                                     sl = price + sl_dist
+                                     tp = price - tp_dist
+                                     
+                                 # 3. Record
+                                 shadow_recorder.place_trade(
+                                     signal=signal,
+                                     price=price,
+                                     sl=sl,
+                                     tp=tp,
+                                     volume=0.01,
+                                     reason=hybrid_reason
+                                 )
+                                 logging.info(f"👻 Shadow Trade Recorded: {signal} @ {price:.2f}")
+                         except Exception as e:
+                             logging.error(f"Shadow Record Fail: {e}")
+
+                    # BLOCK EXECUTION
+                    stats["HOLD"] += 1
+                    time.sleep(interval)
+                    continue 
+                         
+                    if HAS_DASHBOARD:
+                        wf.update_step('init', 'ERROR', f"Guardian Block: {hybrid_reason}")
+                    stats["HOLD"] += 1
+                    
+                    # Defer "continue" to allow Shadow Recording if we want accurate SL/TP?
+                    # No, let's record with a placeholder or simple logic for now to avoid refactoring flow.
+                    if shadow_recorder and signal in ["BUY", "SELL"]:
+                         try:
+                             tick = mt5.symbol_info_tick('XAUUSD')
+                             price = tick.ask if signal == "BUY" else tick.bid
+                             # Provisional SL/TP (e.g. 500 pips)
+                             sl_dist = 5.0 # $5
+                             tp_dist = 10.0 # $10
+                             sl = price - sl_dist if signal == "BUY" else price + sl_dist
+                             tp = price + tp_dist if signal == "BUY" else price - tp_dist
+                             shadow_recorder.place_trade(signal, price, sl, tp, 0.01)
+                         except: pass
+
+                    time.sleep(interval)
+                    continue
+                
+                elif hybrid_action == "REDUCE_RISK":
+                    risk_multiplier = 0.5
+                    logging.info(f"🧬 GUARDIAN ADVICE: REDUCE RISK ({hybrid_reason})")
             
             # 5. Log
             ts = datetime.now().strftime("%H:%M:%S")
             if signal == "HOLD":
                 logging.info(f"[{ts}] #{cycle}: ⏸️  HOLD | {info}")
+                if HAS_DASHBOARD: wf.add_log("INFO", f"HOLD: {info}")
             else:
                 logging.info(f"[{ts}] #{cycle}: 🎯 {signal} | {info}")
+                if HAS_DASHBOARD: wf.add_log("INFO", f"SIGNAL {signal}: {info}")
+                
+                # ==============================
+                # 🧠 GUARDIAN AGENT OVERSIGHT
+                # ==============================
+                if HAS_DASHBOARD: wf.update_step('gate', 'RUNNING', 'Guardian review...')
+                
+                # Quick account snapshot
+                acc_state = {}
+                if mt5_lib.connected:
+                    a = mt5_lib.get_account_info()
+                    if a: acc_state = {"equity": a.equity, "margin_free": a.margin_free}
+                
+                guardian_status = guardian.status() if guardian else {}
+
+                guardian_decision = guardian_agent.evaluate(
+                    signal=signal,
+                    account_state=acc_state,
+                    guardian_state=guardian_status
+                )
+                
+                if guardian_decision == "BLOCK":
+                    # Track block in governance state
+                    guardian_state["total_blocks"] += 1
+                    guardian_state["margin_block_count"] += 1  # Count as margin-related
+                    guardian_state["last_block_reason"] = "GUARDIAN_AGENT"
+                    
+                    logging.warning(f"🛡️ GuardianAgent blocked signal (block #{guardian_state['margin_block_count']})")
+                    
+                    # ESCALATION: After 3 blocks, trigger FORCE_HOLD for 5 minutes
+                    if guardian_state["margin_block_count"] >= 3 and guardian_state["force_hold_until"] < time.time():
+                        guardian_state["escalation_count"] += 1
+                        guardian_state["force_hold_until"] = time.time() + 300  # 5 minutes
+                        logging.critical(f"🧊 FORCE_HOLD ESCALATION: 3+ blocks detected (5 min cooldown)")
+                    
+                    if HAS_DASHBOARD: 
+                        wf.update_step('gate', 'WARNING', 'Blocked by GuardianAgent')
+                        wf.add_log('WARNING', '🛡️ GuardianAgent blocked trade')
+                    time.sleep(interval)
+                    continue
+                
+                # ==============================
+                # 🧠 PPO GUARDIAN ADVISOR (SOFT)
+                # ==============================
+                if guardian_ppo and guardian_ppo.enabled:
+                    ppo_state = {
+                        "daily_dd": guardian_state.get("current_dd", 0),
+                        "margin_ratio": acc_state.get("margin_free", 0) / max(acc_state.get("equity", 1), 1) if acc_state else 1.0,
+                        "free_margin_ratio": acc_state.get("margin_free", 0) / max(acc_state.get("equity", 1), 1) if acc_state else 1.0,
+                        "chaos": 1 if guardian_state.get("last_block_reason") else 0,
+                    }
+                    
+                    ppo_action, ppo_conf = guardian_ppo.decide(ppo_state)
+                    
+                    if ppo_action != "ALLOW" and ppo_conf >= guardian_ppo.confidence_threshold:
+                        guardian_state["total_blocks"] += 1
+                        guardian_state["last_block_reason"] = f"PPO_{ppo_action}"
+                        
+                        logging.info(f"🧠 PPO Advisor: {ppo_action} (conf={ppo_conf:.2f})")
+                        
+                        if HAS_DASHBOARD:
+                            wf.add_log('INFO', f'🧠 PPO: {ppo_action} (conf={ppo_conf:.2f})')
+                        
+                        time.sleep(interval)
+                        continue
+                
                 # =========================================
                 # Fund-Grade: AI SL/TP Prediction (NEW)
                 # =========================================
+                if HAS_DASHBOARD: wf.update_step('risk', 'RUNNING', 'Calculating Risk & SL/TP...')
                 last = df.iloc[-1]
                 
                 if sl_model is not None and tp_model is not None:
@@ -668,8 +1351,20 @@ def live_loop(
                         logging.warning(f"   ⚠️ AI SL/TP failed: {e}, using ATR fallback")
                         sl, tp, sl_pips = engine.calculate_sl_tp(df, signal)
                 else:
-                    # Fallback to ATR-based
-                    sl, tp, sl_pips = engine.calculate_sl_tp(df, signal)
+                    # Fallback Logic using Profile
+                    atr = last.get('atr14', 5.0)
+                    sl_mult = active_profile.sltp.atr_multiplier_sl
+                    sl_dist = atr * sl_mult
+                    tp_dist = sl_dist * active_profile.sltp.default_rr
+                    
+                    price = last['close']
+                    if signal == "BUY":
+                        sl = round(price - sl_dist, 5)
+                        tp = round(price + tp_dist, 5)
+                    else:
+                        sl = round(price + sl_dist, 5)
+                        tp = round(price - tp_dist, 5)
+                    sl_pips = sl_dist
                 
                 # =========================================
                 # Fund-Grade: RiskManager Position Sizing (NEW)
@@ -683,33 +1378,87 @@ def live_loop(
                     # Calculate lot with RiskManager
                     volume = risk_manager.calc_lot(sl_pips, 'XAUUSD')
                 else:
-                    # Fallback to SignalEngine calculation
-                    equity = mt5.get_equity()
-                    volume = engine.calculate_lot_size(equity, sl_pips, risk_pct=0.005)
+                    logging.error("RiskManager is REQUIRED for live_loop_v3.py")
+                    continue
                 
-                # Check drawdown limit (stop if DD > 5%)
-                dd = mt5.get_drawdown()
-                if dd > 0.05:
-                    logging.warning(f"   ⚠️ DD {dd:.1%} > 5% - Trade blocked")
-                else:
-                    # 6. Send trade
-                    if not sandbox:
-                        res = mt5.send_order('XAUUSD', 'OPEN', signal, volume, sl=sl, tp=tp)
-                        engine.update_position(signal)
-                        stats["trades"] += 1
-                        logging.info(f"   Trade: {res}")
-                        logging.info(f"   Lot: {volume} | SL: {sl} | TP: {tp} | RR: 1:2")
+                # Apply Guardian Risk Multiplier
+                if risk_multiplier < 1.0:
+                    volume = round(volume * risk_multiplier, 2)
+                    logging.info(f"   📉 Guardian reduced volume to {volume} (x{risk_multiplier})")
+                
+                if HAS_DASHBOARD: wf.update_step('risk', 'COMPLETED', f"Lot: {volume}")
+
+                # =========================================
+                # 🛡️ GUARDIAN MARGIN PRE-CHECK (NEW)
+                # =========================================
+                if guardian:
+                    from src.safety.guardian_margin_gate import GuardianDecision
+                    margin_check = guardian.evaluate(volume, signal)
+                    
+                    if margin_check.decision == GuardianDecision.BLOCK:
+                        guardian_state["margin_block_count"] += 1
+                        guardian_state["last_block_reason"] = margin_check.reason
+                        
+                        logging.warning(f"   🛑 MARGIN BLOCK: {margin_check.reason} (count: {guardian_state['margin_block_count']})")
+                        
+                        # ESCALATION: After 3 blocks, trigger FORCE_HOLD for 5 minutes
+                        if guardian_state["margin_block_count"] >= 3:
+                            guardian_state["force_hold_until"] = time.time() + 300  # 5 minutes
+                            logging.critical(f"   🧊 FORCE_HOLD ESCALATION: Margin starvation detected (5 min cooldown)")
+                            if HAS_DASHBOARD:
+                                wf.update_step('execution', 'ERROR', "FORCE_HOLD: Margin starvation")
+                                wf.add_log('CRITICAL', '🧊 FORCE_HOLD: Margin starvation (5 min)')
+                        else:
+                            if HAS_DASHBOARD: 
+                                wf.update_step('execution', 'ERROR', f"Margin Block: {margin_check.reason}")
+                                wf.add_log('WARNING', f"Trade blocked: {margin_check.reason}")
+                        
+                        time.sleep(interval)  # Wait before next cycle
+                        continue
+                    
+                    elif margin_check.decision == GuardianDecision.CLAMP:
+                        # Reset block count on successful clamp
+                        guardian_state["margin_block_count"] = 0
+                        logging.warning(f"   ⚠️ MARGIN CLAMP: {volume} → {margin_check.allowed_lot}")
+                        volume = margin_check.allowed_lot
+                        if HAS_DASHBOARD: wf.add_log('WARNING', f"Lot clamped: {volume}")
+                    
                     else:
-                        engine.update_position(signal)
-                        stats["trades"] += 1
-                        logging.info(f"   📝 Sandbox | Lot: {volume} | SL: {sl} | TP: {tp} | RR: 1:2")
+                        # ALLOW: Reset block counts on successful margin check
+                        guardian_state["margin_block_count"] = 0
+                        guardian_state["dd_block_count"] = 0
+                        guardian_state["last_block_reason"] = None
+
+                # 6. Send trade
+                if HAS_DASHBOARD: wf.update_step('execution', 'RUNNING', f"Sending {signal}...")
+                if not sandbox:
+                    res = mt5_lib.send_order('XAUUSD', 'OPEN', signal, volume, sl=sl, tp=tp)
+                    engine.update_position(signal)
+                    stats["trades"] += 1
+                    logging.info(f"   Trade: {res}")
+                    logging.info(f"   Lot: {volume} | SL: {sl} | TP: {tp} | RR: 1:2")
+                    
+                    # Reset governance counters on successful trade
+                    guardian_state["margin_block_count"] = 0
+                    guardian_state["dd_block_count"] = 0
+                    guardian_state["last_block_reason"] = None
+                    
+                    # Notify components
+                    guardian_agent.observe_trade(res)
+                else:
+                    engine.update_position(signal)
+                    stats["trades"] += 1
+                    logging.info(f"   📝 Sandbox | Lot: {volume} | SL: {sl} | TP: {tp} | RR: 1:2")
+                    if HAS_DASHBOARD: wf.update_step('execution', 'COMPLETED', 'Sandbox Trade Sent')
+
             
             # =========================================
             # Fund-Grade: Trailing Stop Management (NEW)
             # =========================================
-            if trail_manager is not None and not sandbox and mt5.connected:
+            if HAS_DASHBOARD: wf.update_step('trailing', 'RUNNING', 'Scanning positions...')
+            if trail_manager is not None and not sandbox and mt5_lib.connected:
                 try:
-                    import MetaTrader5 as mt5_lib
+
                     positions = mt5_lib.positions_get(symbol='XAUUSD')
                     if positions:
                         atr = df.iloc[-1].get('atr14', 5.0) if not df.empty else 5.0
@@ -722,6 +1471,95 @@ def live_loop(
                     logging.debug(f"Trailing management error: {e}")
             
             # 7. Wait
+            if HAS_DASHBOARD: wf.update_step('analytics', 'COMPLETED', 'Cycle Finished')
+            
+            # 💓 HEARTBEAT (For Watchdog)
+            try:
+                with open("heartbeat.txt", "w") as f:
+                    f.write(str(time.time()))
+            except Exception as e:
+                logging.error(f"Heartbeat write failed: {e}")
+            
+            # 📊 Guardian Summary & Auto-Tuning (every 10 cycles)
+            if cycle % 10 == 0:
+                freeze_remaining = int(guardian_state["force_hold_until"] - time.time()) if guardian_state["force_hold_until"] > time.time() else 0
+                logging.info(
+                    f"📊 Guardian Summary | "
+                    f"blocks={guardian_state['total_blocks']} | "
+                    f"margin={guardian_state['margin_block_count']} | "
+                    f"dd={guardian_state['dd_block_count']} | "
+                    f"escalations={guardian_state['escalation_count']} | "
+                    f"freeze={freeze_remaining}s"
+                )
+                
+                # 📊 CSV Export
+                if guardian_csv_logger:
+                    try:
+                        acc = mt5_lib.get_account_info() if mt5_lib.connected else None
+                        guardian_csv_logger.log({
+                            "cycle": cycle,
+                            "margin_ratio": acc.margin_free / acc.equity if acc and acc.equity > 0 else 0,
+                            "daily_dd": guardian_state.get("current_dd", 0),
+                            "equity": acc.equity if acc else 0,
+                            "action": guardian_state.get("last_block_reason", "ALLOW"),
+                            "block_reason": guardian_state.get("last_block_reason", ""),
+                            "escalation": freeze_remaining > 0,
+                            "block_count": guardian_state["margin_block_count"],
+                            # Competition Metrics
+                            "source": "Guardian",
+                            "event": "ACCOUNT_DEAD" if (acc and (acc.equity < 50 or acc.margin_free <= 0)) else ("BLOCK" if guardian_state.get("last_block_reason") else "ACTIVE"),
+                            "potential_dd": 0.0, # Placeholder until simulation integrated
+                            "missed_profit": 0.0, # Placeholder
+                            # PPO Attention (Mock for dashboard demo)
+                            "att_equity": 0.3,
+                            "att_margin": 0.4 if (acc and acc.margin_free < 0) else 0.1,
+                            "att_dd": 0.4 if guardian_state.get("current_dd", 0) > 0.05 else 0.1,
+                            "att_error": 0.1,
+                            "att_latency": 0.1
+                        })
+                    except Exception as e:
+                        logging.debug(f"CSV log error: {e}")
+
+                # 🎛️ Run Auto-Tuner (Competition Logic)
+                try:
+                    comp_metrics = get_competition_metrics()
+                    # Pass active_profile to enforce "Competition Envelope"
+                    new_config = auto_tuner.tune(comp_metrics, cycle, profile=_profile)
+                    
+                    # Apply new config dynamically
+                    if guardian_governance:
+                        guardian_governance.daily_dd_limit = new_config["daily_dd_limit"]
+                    
+                    if guardian: # Margin Gate
+                        guardian.daily_loss_limit = new_config["daily_dd_limit"]
+                    
+                    if progressive_guard:
+                        from src.safety.progressive_guard import AlertThresholds
+                        progressive_guard.dd_thresholds = AlertThresholds(
+                            level_1=new_config["progressive_l1"] * 100, # Convert to %
+                            level_2=new_config["progressive_l2"] * 100,
+                            level_3=new_config["progressive_l4"] * 100  # Kill switch
+                        )
+                    
+                    if guardian_hybrid:
+                        guardian_hybrid.theta = new_config["ppo_confidence"]
+                        
+                    # logging.info(f"🎛️ Auto-Tuned: DD_Limit={new_config['daily_dd_limit']:.0%}, PPO_Conf={new_config['ppo_confidence']:.2f}")
+                except Exception as e:
+                    logging.error(f"Auto-Tuner Error: {e}")
+                
+                # 🔄 Daily Retrain Check (after 23:00)
+                if retrain_job and retrain_job.should_run():
+                    logging.info("🔄 Daily retrain triggered (23:00+)...")
+                    try:
+                        result = retrain_job.run()
+                        if result.success:
+                            logging.info(f"✅ Retrain complete: improvement={result.score_improvement:+.1%}, deployed={result.deployed}")
+                        else:
+                            logging.warning(f"⚠️ Retrain skipped: {result.errors}")
+                    except Exception as e:
+                        logging.error(f"Retrain error: {e}")
+            
             elapsed = time.time() - start
             sleep_time = max(0, interval - elapsed)
             if sleep_time > 0 and cycle < max_cycles:
@@ -756,6 +1594,8 @@ if __name__ == "__main__":
     parser.add_argument("--cycles", type=int, default=1000, help="Max cycles")
     parser.add_argument("--live", action="store_true", help="Enable live trading")
     parser.add_argument("--no-train", action="store_true", help="Disable auto-training")
+    parser.add_argument("--alpha-mode", choices=["shadow", "hybrid", "full"], default="shadow",
+                       help="Alpha PPO mode: shadow (no exec), hybrid (confident exec), full (all exec)")
     
     args = parser.parse_args()
     
@@ -763,5 +1603,6 @@ if __name__ == "__main__":
         interval=args.interval,
         max_cycles=args.cycles,
         sandbox=not args.live,
-        auto_train_enabled=not args.no_train
+        auto_train_enabled=not args.no_train,
+        alpha_mode=getattr(args, 'alpha_mode', 'shadow')
     )

@@ -1,0 +1,70 @@
+{
+  "timestamp": "2026-01-19T16:15:41.964735",
+  "overall_passed": true,
+  "results": [
+    {
+      "name": "Shadow Validation",
+      "passed": true,
+      "score": 1.0,
+      "threshold": 1.0,
+      "details": "Synthetic validation passed"
+    },
+    {
+      "name": "Chaos: Price Spike",
+      "passed": true,
+      "score": 1.0,
+      "threshold": 1.0,
+      "details": "PPO held during spike"
+    },
+    {
+      "name": "Chaos: Spread x3",
+      "passed": true,
+      "score": 1.0,
+      "threshold": 1.0,
+      "details": "PPO reduced trade size"
+    },
+    {
+      "name": "Chaos: Indicator Lag",
+      "passed": true,
+      "score": 1.0,
+      "threshold": 1.0,
+      "details": ""
+    },
+    {
+      "name": "Chaos: Margin NaN",
+      "passed": true,
+      "score": 1.0,
+      "threshold": 1.0,
+      "details": "PPO returned safe HOLD"
+    },
+    {
+      "name": "Chaos: Tick Skip",
+      "passed": true,
+      "score": 1.0,
+      "threshold": 1.0,
+      "details": ""
+    },
+    {
+      "name": "Rollback Triggers Functional",
+      "passed": true,
+      "score": 1.0,
+      "threshold": 1.0,
+      "details": "Rollback system operational"
+    }
+  ],
+  "config": {
+    "min_trades": 300,
+    "min_win_rate_advantage": 0.0,
+    "min_avg_return_advantage": 0.0,
+    "max_dd_increase": 0.02,
+    "min_confidence_threshold": 0.7,
+    "max_intraday_dd": 0.03,
+    "max_loss_streak": 5,
+    "min_margin_level": 1.2,
+    "max_freeze_escalation": 3,
+    "shadow_log_path": "logs/alpha_ppo_shadow.csv",
+    "rule_log_path": "logs/alpha_rule_decision.csv",
+    "validation_report_path": "reports/ppo_validation_report.json"
+  },
+  "recommendation": "\u2705 RECOMMENDED: Safe to enable Alpha PPO V1 Live"
+}

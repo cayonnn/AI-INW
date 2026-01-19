@@ -1,0 +1,125 @@
+# ==================================================
+# 🔥 ALPHA PPO V1 — LIVE CONFIG (FINAL)
+# ==================================================
+
+system:
+  mode: LIVE
+  environment: mt5_demo
+  log_level: INFO
+  timezone: Asia/Bangkok
+
+# ==================================================
+# 🧠 ALPHA PPO (Decision Maker)
+# ==================================================
+alpha_ppo:
+  enabled: true
+  mode: live                # live | shadow | off
+  model_path: models/alpha_ppo_v1_20260119_172015_FINAL.zip
+
+  inference:
+    deterministic: true     # ลด randomness ใน live
+    min_confidence: 0.55    # ต่ำกว่านี้ = HOLD
+
+  actions:
+    mapping:
+      0: HOLD
+      1: BUY
+      2: SELL
+
+  frequency:
+    min_seconds_between_trades: 60
+    max_trades_per_hour: 6
+
+# ==================================================
+# 🛡️ GUARDIAN (FINAL AUTHORITY)
+# ==================================================
+guardian:
+  enabled: true
+  mode: hard_authority      # advisory | hard_authority
+
+  daily_limits:
+    max_daily_drawdown_pct: 14.0
+    max_consecutive_losses: 4
+    max_trades_per_day: 20
+
+  margin:
+    min_free_margin_pct: 250
+    emergency_freeze_pct: 150
+
+  volatility_guard:
+    max_atr_multiple: 3.0
+    block_on_news: false
+
+  ppo_guardian:
+    enabled: true
+    model_path: models/guardian_ppo_v3_20260115_1857.zip
+    min_confidence: 0.60
+
+# ==================================================
+# 💰 RISK MANAGEMENT
+# ==================================================
+risk:
+  risk_per_trade_pct: 2.0
+  max_positions: 6
+  position_sizing: dynamic   # fixed | dynamic
+  correlation_limit: 0.75
+
+# ==================================================
+# 🎯 SL / TP / TRAILING
+# ==================================================
+execution:
+  stop_loss:
+    source: ai               # ai | atr | fixed
+    atr_multiplier: 1.8
+    max_sl_pips: 600
+
+  take_profit:
+    source: ai
+    rr_min: 1.5
+    rr_max: 3.5
+
+  trailing:
+    enabled: true
+    breakeven_rr: 1.5
+    trail_start_rr: 2.5
+    atr_trail_multiplier: 2.0
+
+# ==================================================
+# 👻 SHADOW / LOGGING (FOR PAPER & DEBUG)
+# ==================================================
+shadow:
+  enabled: true
+  track_blocked_trades: true
+  save_shadow_trades: true
+
+logging:
+  trade_log: true
+  decision_trace: true
+  alpha_guardian_diff: true
+  save_csv: true
+
+# ==================================================
+# 🔄 AUTO TRAIN / RETRAIN
+# ==================================================
+auto_train:
+  enabled: true
+  data_path: data/retrain
+  min_trades_per_day: 5
+  retrain_time: "23:00"
+  auto_deploy: false        # ⚠️ LIVE = manual deploy only
+
+# ==================================================
+# 📊 DASHBOARD
+# ==================================================
+dashboard:
+  enabled: true
+  streamlit_port: 8501
+  auth: false
+
+# ==================================================
+# 🧪 SAFETY FLAGS
+# ==================================================
+safety:
+  kill_switch: true
+  kill_on_exception: true
+  block_if_model_missing: true

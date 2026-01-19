@@ -1,0 +1,5 @@
+
+    @app.post("/api/workflow/update")
+    async def update_workflow(data: dict):
+        workflow_state.update_from_client(data)
+        return {"status": "ok"}

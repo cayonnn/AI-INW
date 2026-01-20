@@ -1,142 +1,143 @@
-# ==================================================
-# 🔥 ALPHA PPO V2 — LIVE CONFIG (COMPETITION READY)
-# ==================================================
-# Based on: Alpha PPO v1 optimized + Competition-Balanced
+# ============================================================
+# 🔴 ALPHA PPO v2 - LIVE CONFIG (FINAL)
+# Competition / Leaderboard / Demo-Real Ready
+# ============================================================
 
-system:
-  mode: LIVE
-  environment: mt5_demo
-  log_level: INFO
-  timezone: Asia/Bangkok
+meta:
+  name: "Alpha PPO v2 LIVE"
+  version: "2.0-final"
+  created: "2026-01-19"
+  mode: "live"
+  author: "Cayon AI Trading Lab"
 
-# ==================================================
-# 🧠 ALPHA PPO V2 (Primary Decision Maker)
-# ==================================================
+# ============================================================
+# 🧠 ALPHA PPO ENGINE
+# ============================================================
 alpha:
   version: v2
-  enabled: true
-  mode: hybrid               # shadow | hybrid | full
   model_path: models/alpha_ppo_v2_live.zip
-  fallback_model_path: models/alpha_ppo_v1.zip
-
-  confidence:
-    min_trade_conf: 0.55     # ต่ำกว่านี้ = HOLD
-    override_rule_conf: 0.65 # สูงกว่านี้ = ใช้ Alpha แทน Rule
-
-  frequency:
-    min_seconds_between_trades: 60
-    max_trades_per_hour: 8   # เพิ่มจาก 6
-
-# ==================================================
-# 🛡️ GUARDIAN PPO V3 (FINAL AUTHORITY)
-# ==================================================
-guardian:
-  enabled: true
-  mode: hard_authority       # advisory | hard_authority
-
-  daily_limits:
-    max_daily_drawdown_pct: 14.0
-    soft_dd_warning_pct: 9.0
-    max_consecutive_losses: 3
-    max_trades_per_day: 20
-
-  margin:
-    min_free_margin_pct: 250
-    emergency_freeze_pct: 150
-
-  volatility_guard:
-    max_atr_multiple: 3.0
-    block_on_news: false
-
-  ppo_guardian:
+  fallback:
     enabled: true
-    model_path: models/guardian_ppo_v3_20260115_1857.zip
-    min_confidence: 0.60
+    model_path: models/alpha_ppo_v1.zip
+  mode:
+    default: hybrid        # shadow | hybrid | full
+    min_confidence: 0.55
+    full_override_conf: 0.70
+  safety:
+    auto_disable:
+      daily_dd: 8.0        # auto revert to shadow if DD > 8%
+      max_consecutive_loss: 3
+  logging:
+    enable: true
+    file: logs/alpha_v2_decisions.csv
 
-# ==================================================
-# 💰 RISK MANAGEMENT (V2 OPTIMIZED)
-# ==================================================
-risk:
-  risk_per_trade_pct: 0.5    # Conservative for v2 testing
-  max_positions: 4
-  position_sizing: dynamic
-  correlation_limit: 0.75
-  cooldown_minutes: 15
+# ============================================================
+# 🛡️ GUARDIAN GOVERNANCE (FINAL AUTHORITY)
+# ============================================================
+guardian:
+  daily_drawdown:
+    limit: 14.0            # competition aggressive
+    hard_latch: true
+  kill_switch:
+    max_dd: 10.0
+    max_errors: 3
+  margin:
+    min_free_margin_pct: 5.0
+    buffer: 1.10
+  escalation:
+    max_blocks: 3
+    freeze_minutes: 5
+  logging:
+    file: logs/guardian_metrics.csv
 
-# ==================================================
-# 🎯 SL / TP / TRAILING (COMPETITION BALANCED)
-# ==================================================
+# ============================================================
+# 🎛️ COMPETITION AUTO-TUNER
+# ============================================================
+auto_tuner:
+  enabled: true
+  adapt_window_trades: 20
+  dd_pressure:
+    soften_rr_below_dd: 6.0
+    tighten_guard_above_dd: 9.0
+  rr_range:
+    min: 1.6
+    max: 2.6
+
+# ============================================================
+# 🎯 TRADE EXECUTION (TP / SL)
+# ============================================================
 execution:
+  entry:
+    source: alpha          # alpha / rule / hybrid
   stop_loss:
     source: ai
-    atr_multiplier: 1.6      # V2: slightly more room
-    max_sl_pips: 380         # V2: 380 vs V1: 350
-
+    atr_multiplier: 1.6
+    max_sl_pips: 350       # safe for XAUUSD
   take_profit:
     source: ai
-    rr_min: 1.8              # V2: better RR
-    rr_max: 2.6              # V2: realistic but profitable
-
+    rr_min: 1.6
+    rr_max: 2.6
   trailing:
     enabled: true
-    breakeven_rr: 1.5
+    break_even_rr: 1.4
     trail_start_rr: 2.0
-    atr_trail_multiplier: 1.5
+    atr_multiplier: 1.2
 
-# ==================================================
-# 🔁 FALLBACK CONFIGURATION
-# ==================================================
-fallback:
-  on_low_confidence: rule    # Use rule signal
-  on_model_error: alpha_v1   # Use v1 model
-  on_dd_exceeded: disable    # Disable v2
+# ============================================================
+# 💰 RISK MANAGEMENT
+# ============================================================
+risk:
+  per_trade_risk_pct: 2.0
+  max_positions: 6
+  daily_loss_limit_pct: 14.0
+  position_scaling:
+    reduce_above_dd: 7.0
+    scale_factor: 0.7
 
-# ==================================================
-# 🚨 EMERGENCY KILL-SWITCH
-# ==================================================
-emergency:
-  daily_dd_threshold: 8.0    # Auto-disable Alpha v2
-  alpha_v2_auto_disable: true
-  revert_to: alpha_v1
-  notify_on_disable: true
-
-# ==================================================
-# 👻 SHADOW / LOGGING
-# ==================================================
+# ============================================================
+# 📊 SHADOW & ANALYTICS
+# ============================================================
 shadow:
   enabled: true
-  track_blocked_trades: true
-  save_shadow_trades: true
+  compare_with: rule
+  metrics:
+    track_dd_avoided: true
+    track_freeze_cost: true
+    track_missed_profit: true
 
-logging:
-  trade_log: true
-  decision_trace: true
-  alpha_v1_v2_comparison: true
-  save_csv: true
-
-# ==================================================
-# 🔄 AUTO TRAIN / RETRAIN
-# ==================================================
-auto_train:
-  enabled: true
-  data_path: data/retrain
-  min_trades_per_day: 5
-  retrain_time: "23:00"
-  auto_deploy: true
-
-# ==================================================
-# 📊 DASHBOARD
-# ==================================================
+# ============================================================
+# 📈 DASHBOARD / EXPORT
+# ============================================================
 dashboard:
-  enabled: true
-  streamlit_port: 8501
-  show_v1_v2_comparison: true
-  show_confidence_histogram: true
+  realtime: true
+  socket_port: 8765
+  export:
+    auto_png: true
+    path: reports/figures
+    interval_minutes: 30
 
-# ==================================================
-# 🧪 SAFETY FLAGS
-# ==================================================
-safety:
-  kill_switch: true
-  kill_on_exception: true
-  block_if_model_missing: true
+# ============================================================
+# 🔁 RETRAIN / ONLINE LEARNING
+# ============================================================
+retrain:
+  enabled: true
+  min_trades: 5
+  window_days: 7
+  auto_deploy: false       # manual promote only
+
+# ============================================================
+# 🧪 CHAOS / FAULT TOLERANCE
+# ============================================================
+chaos:
+  enable_detection: true
+  max_latency_sec: 2.0
+  on_error:
+    action: force_hold
+
+# ============================================================
+# ✅ SYSTEM FLAGS
+# ============================================================
+flags:
+  allow_live_trade: true
+  require_guardian_pass: true
+  log_every_decision: true

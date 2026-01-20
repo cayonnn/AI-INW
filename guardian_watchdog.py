@@ -3,6 +3,7 @@ import subprocess
 import time
 import sys
 import logging
+import argparse
 from datetime import datetime
 import signal
 import os
@@ -14,8 +15,16 @@ os.makedirs("logs", exist_ok=True)
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding='utf-8')
 
+# Parse arguments
+parser = argparse.ArgumentParser()
+parser.add_argument("--alpha-mode", type=str, default="shadow", 
+                    choices=["shadow", "hybrid", "full"],
+                    help="Alpha PPO mode: shadow, hybrid, or full")
+args, unknown = parser.parse_known_args()
+
 # Configuration
 SCRIPT_TO_MONITOR = "live_loop_v3.py"
+ALPHA_MODE = args.alpha_mode
 RESTART_DELAY = 5  # Seconds
 MAX_RESTARTS_PER_HOUR = 20
 
@@ -59,6 +68,7 @@ class Watchdog:
     def run(self):
         """Main loop."""
         logging.info(f"[START] Watchdog started. Monitoring: {SCRIPT_TO_MONITOR}")
+        logging.info(f"[MODE] Alpha Mode: {ALPHA_MODE}")
         
         while self.running:
             try:
@@ -67,7 +77,8 @@ class Watchdog:
                 start_time = time.time()
                 
                 # Using sys.executable to use the same python interpreter
-                cmd = [sys.executable, SCRIPT_TO_MONITOR, "--live"]
+                # Pass alpha-mode to live_loop
+                cmd = [sys.executable, SCRIPT_TO_MONITOR, "--live", f"--alpha-mode={ALPHA_MODE}"]
                 
                 # Prune old heartbeat before start to prevent immediate kill
                 if os.path.exists("heartbeat.txt"):

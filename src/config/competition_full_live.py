@@ -103,7 +103,7 @@ TRAIN_DATA_PATH = "data/retrain"
 MIN_TRADES_FOR_RETRAIN = 5
 
 RETRAIN_TIME = "23:00"
-AUTO_DEPLOY_NEW_MODEL = False   # Manual review first
+AUTO_DEPLOY_NEW_MODEL = True   # ✅ Auto deploy after retrain
 
 # ================================
 # LOGGING

@@ -219,9 +219,7 @@ class AlphaPPOInference:
         Predict action from state.
         
         Args:
-            state: Dictionary with keys:
-                - ema_fast_diff, rsi, atr, spread, time_of_day
-                - open_positions, floating_dd, guardian_state
+            state: Dictionary with market/account features
                 
         Returns:
             (action_name, confidence) tuple
@@ -232,16 +230,20 @@ class AlphaPPOInference:
             return "HOLD", 0.0
         
         try:
-            # Build observation
+            # Build 12-feature observation (matching MarketEnvV3)
             obs = np.array([
-                state.get("ema_fast_diff", 0.0),
-                state.get("rsi", 0.0),
-                state.get("atr", 0.0),
-                state.get("spread", 0.0),
-                state.get("time_of_day", 0.5) * 2 - 1,
-                np.tanh(state.get("open_positions", 0) / 5),
-                state.get("floating_dd", 0.0) * 4,
-                state.get("guardian_state", 0) / 2.0
+                state.get("ret_1", state.get("ema_fast_diff", 0.0)),          # 0: return 1
+                state.get("ret_5", 0.0),                                        # 1: return 5
+                state.get("ema_diff", state.get("ema_fast_diff", 0.0)),        # 2: ema diff
+                state.get("rsi", 50.0) / 100.0 - 0.5,                          # 3: rsi normalized
+                state.get("atr", 10.0) / 100.0,                                # 4: atr normalized
+                state.get("volatility", 0.02),                                 # 5: volatility
+                np.tanh(state.get("open_positions", 0) / 5),                   # 6: position
+                state.get("margin_used", 0.1),                                 # 7: margin
+                state.get("time_of_day", 0.5) * 2 - 1,                         # 8: hour normalized
+                state.get("spread", 0.1) / 10.0,                               # 9: spread
+                state.get("floating_dd", 0.0) * 4,                             # 10: unrealized pnl
+                state.get("guardian_state", 0) / 2.0                           # 11: time in position
             ], dtype=np.float32)
             
             # Get action and probabilities

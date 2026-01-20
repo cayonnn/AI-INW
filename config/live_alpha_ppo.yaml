@@ -106,7 +106,7 @@ auto_train:
   data_path: data/retrain
   min_trades_per_day: 5
   retrain_time: "23:00"
-  auto_deploy: false        # ⚠️ LIVE = manual deploy only
+  auto_deploy: true         # ✅ ENABLED - Auto deploy after retrain
 
 # ==================================================
 # 📊 DASHBOARD

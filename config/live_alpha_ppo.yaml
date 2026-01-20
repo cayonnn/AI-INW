@@ -59,30 +59,30 @@ guardian:
 # 💰 RISK MANAGEMENT
 # ==================================================
 risk:
-  risk_per_trade_pct: 2.0
-  max_positions: 6
-  position_sizing: dynamic   # fixed | dynamic
+  risk_per_trade_pct: 0.5      # ⬅️ Alpha PPO V1 ยังใหม่ (จาก 2.0)
+  max_positions: 4             # ⬅️ ลดจาก 6
+  position_sizing: dynamic
   correlation_limit: 0.75
 
 # ==================================================
-# 🎯 SL / TP / TRAILING
+# 🎯 SL / TP / TRAILING (COMPETITION BALANCED)
 # ==================================================
 execution:
   stop_loss:
-    source: ai               # ai | atr | fixed
-    atr_multiplier: 1.8
-    max_sl_pips: 600
+    source: ai
+    atr_multiplier: 1.5        # ⬅️ ลดจาก 1.8
+    max_sl_pips: 350           # ⬅️ ลดจาก 600 (สำคัญมาก!)
 
   take_profit:
     source: ai
-    rr_min: 1.5
-    rr_max: 3.5
+    rr_min: 1.6                # ⬅️ เพิ่มเล็กน้อย
+    rr_max: 2.5                # ⬅️ ลดจาก 3.5 (realistic live)
 
   trailing:
     enabled: true
     breakeven_rr: 1.5
-    trail_start_rr: 2.5
-    atr_trail_multiplier: 2.0
+    trail_start_rr: 2.0        # ⬅️ ลดจาก 2.5 (เร็วขึ้น)
+    atr_trail_multiplier: 1.5  # ⬅️ ลดจาก 2.0
 
 # ==================================================
 # 👻 SHADOW / LOGGING (FOR PAPER & DEBUG)

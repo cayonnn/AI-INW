@@ -65,6 +65,14 @@ from src.safety.progressive_guard import get_progressive_guard
 from src.safety.kill_switch import get_kill_switch
 from src.utils.logger import get_logger
 
+# Alpha PPO v2 Controller
+try:
+    from src.alpha.alpha_ppo_v2_controller import AlphaPPOv2Controller
+    HAS_ALPHA_V2 = True
+except ImportError:
+    HAS_ALPHA_V2 = False
+    logging.warning("Alpha PPO v2 Controller not found")
+
 logger = get_logger("LIVE_V3")
 
 def is_new_trading_day(last_day):
@@ -684,6 +692,24 @@ def live_loop(
         logging.debug(f"PPO Live Switch init skipped: {e}")
     
     # =========================================
+    # 🧠 Alpha PPO V2 Controller (NEW!)
+    # =========================================
+    alpha_v2_controller = None
+    if HAS_ALPHA_V2:
+        try:
+            alpha_v2_controller = AlphaPPOv2Controller(
+                model_path="models/alpha_ppo_v2_live.zip",
+                fallback_model_path="models/alpha_ppo_v1.zip",
+                mode=alpha_mode,  # shadow / hybrid / full
+                min_trade_conf=0.55,
+                override_rule_conf=0.65,
+                auto_disable_dd=8.0
+            )
+            logging.info(f"🧠 Alpha PPO V2 Controller Initialized (mode={alpha_mode})")
+        except Exception as e:
+            logging.warning(f"Alpha PPO V2 init failed: {e}")
+    
+    # =========================================
     # 🎛️ Guardian Auto-Tuner (Competition Mode)
     # =========================================
     from src.guardian.guardian_autotuner import GuardianAutoTuner
@@ -937,11 +963,54 @@ def live_loop(
                     engine.load_ai_model(str(model_path))
                 if HAS_DASHBOARD: wf.update_step('ai', 'COMPLETED')
             
-            # 4. Get signal
+            # 4. Get signal (Rule-based)
             if HAS_DASHBOARD: wf.update_step('fusion', 'RUNNING', 'Analyzing signals...')
-            signal, info = engine.get_signal(df)
-            stats[signal] = stats.get(signal, 0) + 1
-            if HAS_DASHBOARD: wf.update_step('fusion', 'COMPLETED', f"Signal: {signal}")
+            rule_signal, info = engine.get_signal(df)
+            stats[rule_signal] = stats.get(rule_signal, 0) + 1
+            
+            # ==============================
+            # 🧠 ALPHA PPO V2 DECISION
+            # ==============================
+            signal = rule_signal  # Default to rule
+            alpha_v2_source = "rule"
+            
+            if alpha_v2_controller is not None:
+                try:
+                    # Build observation for Alpha v2
+                    last_row = df.iloc[-1]
+                    obs = np.array([
+                        np.clip((last_row.get('ema20', 0) - last_row.get('ema50', 0)) / max(last_row.get('atr14', 2.5), 1), -1, 1),
+                        (last_row.get('rsi14', 50) - 50) / 50,
+                        np.clip(last_row.get('atr14', 2.5) / 50, -1, 1),
+                        last_row.get('spread', 0.1) / 1.0,
+                        datetime.now().hour / 24.0,
+                        len(mt5.positions_get() or []) / 10 if mt5_lib.connected else 0,
+                        guardian_state.get("current_dd", 0.0) / 20.0,
+                        0 if not guardian or guardian.allow_trade() else 0.5,
+                        0.0, 0.0  # Reserved
+                    ], dtype=np.float32)
+                    
+                    # Get Alpha v2 decision
+                    v2_decision = alpha_v2_controller.decide(
+                        rule_signal=rule_signal,
+                        obs=obs,
+                        daily_dd=guardian_state.get("current_dd", 0.0) * 100
+                    )
+                    
+                    signal = v2_decision.action
+                    alpha_v2_source = v2_decision.source
+                    
+                    # Log decision
+                    if v2_decision.source == "v2":
+                        logging.info(f"🧠 Alpha V2 | {v2_decision.action} ({v2_decision.confidence:.0%}) | {v2_decision.reason}")
+                    else:
+                        logging.debug(f"🧠 Alpha V2 fallback | Rule={rule_signal} | {v2_decision.reason}")
+                    
+                except Exception as e:
+                    logging.debug(f"Alpha V2 decision error: {e}")
+                    signal = rule_signal
+            
+            if HAS_DASHBOARD: wf.update_step('fusion', 'COMPLETED', f"Signal: {signal} (src={alpha_v2_source})")
             
             # ==============================
             # 🧠 ALPHA PPO SHADOW COMPARISON

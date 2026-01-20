@@ -61,7 +61,7 @@ auto_tuner:
     tighten_guard_above_dd: 9.0
   rr_range:
     min: 1.6
-    max: 2.6
+    max: 3.0
 
 # ============================================================
 # 🎯 TRADE EXECUTION (TP / SL)
@@ -76,7 +76,7 @@ execution:
   take_profit:
     source: ai
     rr_min: 1.6
-    rr_max: 2.6
+    rr_max: 3.0
   trailing:
     enabled: true
     break_even_rr: 1.4

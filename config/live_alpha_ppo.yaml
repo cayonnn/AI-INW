@@ -76,7 +76,7 @@ execution:
   take_profit:
     source: ai
     rr_min: 1.6                # ⬅️ เพิ่มเล็กน้อย
-    rr_max: 2.5                # ⬅️ ลดจาก 3.5 (realistic live)
+    rr_max: 3.0                # ⬅️ ลดจาก 3.5 (realistic live)
 
   trailing:
     enabled: true
